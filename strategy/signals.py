@@ -1,10 +1,14 @@
 """Turns a market snapshot + a genome into a trade decision.
 
-Swing-entry logic: trend from EMA cross, trigger from RSI pullback/rally,
-then confirmed or contradicted by order book imbalance, open-interest
-change, and funding-rate crowding. A clear score fires a trade or a clear
-HOLD; a genuinely mixed read is flagged `ambiguous` so the orchestrator can
-consult the Ollama advisor instead of guessing.
+Swing-entry logic: trend from EMA cross, trigger from RSI pullback/rally.
+Two hard pre-filters gate everything: spread (liquidity) and ATR regime
+(not too dead, not too chaotic). The trigger is then scored against every
+other signal Hyperliquid's data supports - order book imbalance, open
+interest change, funding-rate crowding, mark/oracle premium, volume
+conviction, VWAP deviation, MACD momentum, Bollinger %B, Stochastic RSI,
+and 24h macro momentum. A clear score fires a trade or a clear HOLD; a
+genuinely mixed read is flagged `ambiguous` so the orchestrator can consult
+the Ollama advisor instead of guessing.
 """
 from __future__ import annotations
 
@@ -13,7 +17,9 @@ from datetime import datetime, timezone
 
 from market.hyperliquid_client import MarketSnapshot
 from strategy.genome import Genome
-from strategy.indicators import ema, rsi
+from strategy.indicators import (
+    atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap,
+)
 
 
 @dataclass
@@ -23,9 +29,18 @@ class Features:
     ema_slow: float
     trend_up: bool
     rsi_value: float
-    ob_imbalance: float          # bid_vol / ask_vol over top 10 levels
-    oi_change_pct: float | None  # None if no prior snapshot to diff against
+    ob_imbalance: float           # bid_vol / ask_vol over top 10 levels
+    spread_pct: float
+    oi_change_pct: float | None   # None if no prior snapshot to diff against
     funding: float
+    premium: float
+    atr_pct: float                # ATR as a % of price - volatility regime
+    volume_ratio: float           # latest candle volume / its own recent average
+    vwap_deviation_pct: float     # (price - vwap) / vwap * 100
+    macd_hist: float
+    daily_change_pct: float
+    bb_percent_b: float           # 0 = at lower Bollinger band, 1 = at upper
+    stoch_rsi_k: float            # 0-100, Stochastic RSI %K
 
 
 @dataclass
@@ -37,27 +52,62 @@ class Signal:
     ambiguous: bool
 
 
+def _neutral_features(snap: MarketSnapshot) -> Features:
+    return Features(
+        mid_price=snap.mid_price, ema_fast=snap.mid_price, ema_slow=snap.mid_price,
+        trend_up=True, rsi_value=50.0, ob_imbalance=1.0, spread_pct=0.0, oi_change_pct=None,
+        funding=snap.funding, premium=snap.premium, atr_pct=0.0, volume_ratio=1.0,
+        vwap_deviation_pct=0.0, macd_hist=0.0, daily_change_pct=0.0,
+        bb_percent_b=0.5, stoch_rsi_k=50.0,
+    )
+
+
 def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: float | None) -> Features:
     closes = [c["c"] for c in snap.candles]
-    if len(closes) < max(genome.ema_slow, genome.rsi_period) + 2:
-        # Not enough history yet - treat as neutral/flat.
-        return Features(
-            mid_price=snap.mid_price, ema_fast=snap.mid_price, ema_slow=snap.mid_price,
-            trend_up=True, rsi_value=50.0, ob_imbalance=1.0, oi_change_pct=None,
-            funding=snap.funding,
-        )
+    highs = [c["h"] for c in snap.candles]
+    lows = [c["l"] for c in snap.candles]
+    volumes = [c["v"] for c in snap.candles]
+
+    min_required = max(
+        genome.ema_slow, genome.rsi_period, genome.atr_period,
+        genome.vwap_period, genome.volume_lookback, genome.bb_period,
+        genome.stoch_rsi_period + genome.stoch_k_smooth,
+        genome.ema_slow + genome.macd_signal_period,
+    ) + 2
+    if len(closes) < min_required:
+        return _neutral_features(snap)
 
     ema_fast_series = ema(closes, genome.ema_fast)
     ema_slow_series = ema(closes, genome.ema_slow)
     rsi_series = rsi(closes, genome.rsi_period)
+    atr_series = atr(highs, lows, closes, genome.atr_period)
+    macd_series = macd_histogram(closes, genome.ema_fast, genome.ema_slow, genome.macd_signal_period)
+    bb_series = bollinger_percent_b(closes, genome.bb_period, genome.bb_std_dev)
+    stoch_series = stochastic_rsi(closes, genome.stoch_rsi_period, genome.stoch_rsi_period, genome.stoch_k_smooth)
 
     bid_vol = sum(l["sz"] for l in snap.bid_levels[:10])
     ask_vol = sum(l["sz"] for l in snap.ask_levels[:10])
     ob_imbalance = bid_vol / ask_vol if ask_vol > 0 else 2.0
 
+    best_bid = snap.bid_levels[0]["px"] if snap.bid_levels else snap.mid_price
+    best_ask = snap.ask_levels[0]["px"] if snap.ask_levels else snap.mid_price
+    spread_pct = (best_ask - best_bid) / snap.mid_price * 100.0 if snap.mid_price else 0.0
+
     oi_change_pct = None
     if prev_open_interest and prev_open_interest > 0:
         oi_change_pct = (snap.open_interest - prev_open_interest) / prev_open_interest * 100.0
+
+    recent_volumes = volumes[-genome.volume_lookback:]
+    avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0.0
+    volume_ratio = (volumes[-1] / avg_volume) if avg_volume > 0 else 1.0
+
+    vwap_value = vwap(closes, volumes, genome.vwap_period)
+    vwap_deviation_pct = (snap.mid_price - vwap_value) / vwap_value * 100.0 if vwap_value else 0.0
+
+    daily_change_pct = (
+        (snap.mid_price - snap.prev_day_price) / snap.prev_day_price * 100.0
+        if snap.prev_day_price else 0.0
+    )
 
     return Features(
         mid_price=snap.mid_price,
@@ -66,12 +116,30 @@ def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: flo
         trend_up=bool(ema_fast_series[-1] > ema_slow_series[-1]),
         rsi_value=float(rsi_series[-1]),
         ob_imbalance=ob_imbalance,
+        spread_pct=spread_pct,
         oi_change_pct=oi_change_pct,
         funding=snap.funding,
+        premium=snap.premium,
+        atr_pct=float(atr_series[-1]) / snap.mid_price * 100.0 if snap.mid_price else 0.0,
+        volume_ratio=volume_ratio,
+        vwap_deviation_pct=vwap_deviation_pct,
+        macd_hist=float(macd_series[-1]),
+        daily_change_pct=daily_change_pct,
+        bb_percent_b=float(bb_series[-1]),
+        stoch_rsi_k=float(stoch_series[-1]),
     )
 
 
 def evaluate_entry(genome: Genome, f: Features) -> Signal:
+    # Hard regime filters - fail either and there's no point even looking for
+    # a setup, regardless of how good it might otherwise look.
+    if f.spread_pct > genome.max_spread_pct:
+        return Signal("hold", 0.0, 0, [f"spread {f.spread_pct:.3f}% too wide (max {genome.max_spread_pct}%)"], ambiguous=False)
+    if f.atr_pct < genome.min_atr_pct:
+        return Signal("hold", 0.0, 0, [f"volatility too low (ATR {f.atr_pct:.3f}% < {genome.min_atr_pct}%)"], ambiguous=False)
+    if f.atr_pct > genome.max_atr_pct:
+        return Signal("hold", 0.0, 0, [f"volatility too chaotic (ATR {f.atr_pct:.3f}% > {genome.max_atr_pct}%)"], ambiguous=False)
+
     reasons: list[str] = []
 
     if f.trend_up and f.rsi_value <= genome.rsi_oversold:
@@ -84,59 +152,117 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
         return Signal("hold", 0.0, 0, ["no trend+rsi trigger"], ambiguous=False)
 
     score = 1  # base trigger
+    sign = 1 if candidate == "long" else -1
 
+    # Order book imbalance: for a long, bid-heavy confirms; ask-heavy contradicts (mirrored for short).
+    if sign * (f.ob_imbalance - 1) >= (genome.ob_imbalance_threshold - 1):
+        score += 1
+        reasons.append(f"order book favors {candidate} ({f.ob_imbalance:.2f}x)")
+    elif sign * (f.ob_imbalance - 1) <= -(genome.ob_imbalance_threshold - 1):
+        score -= 1
+        reasons.append(f"order book contradicts {candidate} ({f.ob_imbalance:.2f}x)")
+
+    # Open interest change: NOT direction-mirrored - rising OI means more
+    # participants are piling into whatever the current move is (long or
+    # short), so it confirms either candidate the same way; falling OI means
+    # the move is losing participation, which contradicts either candidate.
+    if f.oi_change_pct is not None:
+        if f.oi_change_pct >= genome.oi_change_threshold:
+            score += 1
+            reasons.append(f"open interest rising {f.oi_change_pct:.2f}% with {candidate}")
+        elif f.oi_change_pct <= -genome.oi_change_threshold:
+            score -= 1
+            reasons.append("open interest dropping - trend losing conviction")
+
+    # Funding rate crowding: contrarian - a squeeze risk against you, a tailwind for you.
+    if sign * f.funding >= genome.funding_extreme:
+        score -= 1
+        reasons.append(f"funding {f.funding:.5f} crowded {candidate} - squeeze risk")
+    elif sign * f.funding <= -genome.funding_extreme:
+        score += 1
+        reasons.append(f"funding {f.funding:.5f} crowded opposite - squeeze tailwind")
+
+    # Mark/oracle premium: same contrarian treatment as funding.
+    if sign * f.premium >= genome.premium_extreme:
+        score -= 1
+        reasons.append(f"premium {f.premium:.5f} rich in {candidate} direction - chasing")
+    elif sign * f.premium <= -genome.premium_extreme:
+        score += 1
+        reasons.append(f"premium {f.premium:.5f} cheap in {candidate} direction - room to run")
+
+    # Volume conviction: a spike in participation backing the move.
+    if f.volume_ratio >= genome.volume_spike_threshold:
+        score += 1
+        reasons.append(f"volume spike ({f.volume_ratio:.2f}x average) backs the move")
+
+    # VWAP: buying below fair value / selling above it confirms; chasing far
+    # past it on the wrong side of that logic contradicts.
+    if sign * f.vwap_deviation_pct <= -genome.vwap_deviation_threshold:
+        score += 1
+        reasons.append(f"price {f.vwap_deviation_pct:.2f}% from VWAP - good {candidate} value")
+    elif sign * f.vwap_deviation_pct >= genome.vwap_deviation_threshold:
+        score -= 1
+        reasons.append(f"price {f.vwap_deviation_pct:.2f}% from VWAP - chasing, extended")
+
+    # MACD momentum in the trade's direction.
+    if sign * f.macd_hist > 0:
+        score += 1
+        reasons.append(f"MACD histogram {f.macd_hist:.4f} backs {candidate} momentum")
+    elif sign * f.macd_hist < 0:
+        score -= 1
+        reasons.append(f"MACD histogram {f.macd_hist:.4f} contradicts {candidate} momentum")
+
+    # 24h macro momentum aligned with the trade direction.
+    if sign * f.daily_change_pct >= genome.daily_momentum_threshold:
+        score += 1
+        reasons.append(f"24h change {f.daily_change_pct:.2f}% aligned with {candidate}")
+    elif sign * f.daily_change_pct <= -genome.daily_momentum_threshold:
+        score -= 1
+        reasons.append(f"24h change {f.daily_change_pct:.2f}% fights the daily trend")
+
+    # Bollinger %B: near the band on your side of the trade confirms (bands
+    # aren't symmetric around zero like the signals above, so this is
+    # written explicitly per direction rather than via the sign trick).
     if candidate == "long":
-        if f.ob_imbalance >= genome.ob_imbalance_threshold:
+        if f.bb_percent_b <= genome.bb_entry_threshold:
             score += 1
-            reasons.append(f"order book bid-heavy ({f.ob_imbalance:.2f}x)")
-        elif f.ob_imbalance <= 1 / genome.ob_imbalance_threshold:
+            reasons.append(f"price near lower Bollinger band (%B={f.bb_percent_b:.2f})")
+        elif f.bb_percent_b >= 1 - genome.bb_entry_threshold:
             score -= 1
-            reasons.append(f"order book ask-heavy ({f.ob_imbalance:.2f}x) - contradicts")
-
-        if f.oi_change_pct is not None:
-            if f.oi_change_pct >= genome.oi_change_threshold:
-                score += 1
-                reasons.append(f"open interest rising {f.oi_change_pct:.2f}% with uptrend")
-            elif f.oi_change_pct <= -genome.oi_change_threshold:
-                score -= 1
-                reasons.append("open interest dropping - trend losing conviction")
-
-        if f.funding >= genome.funding_extreme:
-            score -= 1
-            reasons.append(f"funding {f.funding:.5f} crowded long - squeeze risk")
-        elif f.funding <= -genome.funding_extreme:
+            reasons.append(f"price near upper Bollinger band (%B={f.bb_percent_b:.2f}) - extended")
+    else:
+        if f.bb_percent_b >= 1 - genome.bb_entry_threshold:
             score += 1
-            reasons.append(f"funding {f.funding:.5f} crowded short - squeeze tailwind")
-
-    else:  # short
-        if f.ob_imbalance <= 1 / genome.ob_imbalance_threshold:
-            score += 1
-            reasons.append(f"order book ask-heavy ({f.ob_imbalance:.2f}x)")
-        elif f.ob_imbalance >= genome.ob_imbalance_threshold:
+            reasons.append(f"price near upper Bollinger band (%B={f.bb_percent_b:.2f})")
+        elif f.bb_percent_b <= genome.bb_entry_threshold:
             score -= 1
-            reasons.append(f"order book bid-heavy ({f.ob_imbalance:.2f}x) - contradicts")
+            reasons.append(f"price near lower Bollinger band (%B={f.bb_percent_b:.2f}) - extended")
 
-        if f.oi_change_pct is not None:
-            if f.oi_change_pct >= genome.oi_change_threshold:
-                score += 1
-                reasons.append(f"open interest rising {f.oi_change_pct:.2f}% with downtrend")
-            elif f.oi_change_pct <= -genome.oi_change_threshold:
-                score -= 1
-                reasons.append("open interest dropping - trend losing conviction")
-
-        if f.funding <= -genome.funding_extreme:
-            score -= 1
-            reasons.append(f"funding {f.funding:.5f} crowded short - squeeze risk")
-        elif f.funding >= genome.funding_extreme:
+    # Stochastic RSI: a faster, more sensitive oversold/overbought read than RSI itself.
+    if candidate == "long":
+        if f.stoch_rsi_k <= genome.stoch_rsi_oversold:
             score += 1
-            reasons.append(f"funding {f.funding:.5f} crowded long - squeeze tailwind")
+            reasons.append(f"StochRSI oversold ({f.stoch_rsi_k:.1f})")
+        elif f.stoch_rsi_k >= genome.stoch_rsi_overbought:
+            score -= 1
+            reasons.append(f"StochRSI overbought ({f.stoch_rsi_k:.1f}) - contradicts")
+    else:
+        if f.stoch_rsi_k >= genome.stoch_rsi_overbought:
+            score += 1
+            reasons.append(f"StochRSI overbought ({f.stoch_rsi_k:.1f})")
+        elif f.stoch_rsi_k <= genome.stoch_rsi_oversold:
+            score -= 1
+            reasons.append(f"StochRSI oversold ({f.stoch_rsi_k:.1f}) - contradicts")
 
+    # Up to 10 confirmation dimensions now (order book, OI, funding, premium,
+    # volume, VWAP, MACD, daily momentum, Bollinger, StochRSI) on top of the
+    # base trigger, so the score range is wider than a simple +-1 vote.
     if score < 0:
         return Signal("hold", 0.0, score, reasons + ["net contradicted, skipping"], ambiguous=False)
-    if score <= 1:
+    if score <= 2:
         return Signal(candidate, 0.4, score, reasons, ambiguous=True)
 
-    confidence = min(1.0, score / 4)
+    confidence = min(1.0, score / 8)
     return Signal(candidate, confidence, score, reasons, ambiguous=False)
 
 

@@ -49,6 +49,11 @@ class Config:
     population_cap: int = int(os.getenv("POPULATION_CAP", "500"))
     active_trader_count: int = int(os.getenv("ACTIVE_TRADER_COUNT", "50"))
     min_population_floor: int = int(os.getenv("MIN_POPULATION_FLOOR", "50"))
+    # An agent whose regime filters never admit a trade would otherwise
+    # squat a population slot forever (the normal cull only considers agents
+    # that have completed >=1 trade). Past this many idle hours, it becomes
+    # culuable too, but only when the population actually needs the room.
+    max_idle_hours_before_cull: int = int(os.getenv("MAX_IDLE_HOURS_BEFORE_CULL", "6"))
     children_per_win: int = int(os.getenv("CHILDREN_PER_WIN", "2"))
     win_streak_share_threshold: int = int(os.getenv("WIN_STREAK_SHARE_THRESHOLD", "8"))
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))

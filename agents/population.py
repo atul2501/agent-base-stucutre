@@ -21,12 +21,18 @@ from __future__ import annotations
 
 import logging
 import random
+from datetime import datetime, timezone
 
 from config import Config
-from db.database import Database
+from db.database import AgentRow, Database
 from strategy.genome import Genome
 
 log = logging.getLogger(__name__)
+
+
+def _idle_hours(agent: AgentRow) -> float:
+    created = datetime.fromisoformat(agent.created_at)
+    return (datetime.now(timezone.utc) - created).total_seconds() / 3600.0
 
 
 class Population:
@@ -111,12 +117,20 @@ class Population:
     def rank_and_enforce(self) -> dict:
         alive = self.db.list_alive_agents()
 
-        # Cull down to the population cap, protecting fresh (0-trade) agents.
+        # Cull down to the population cap, protecting fresh (0-trade) agents -
+        # unless they've sat idle so long (regime filters never admitting a
+        # trade) that they're just squatting a slot; those become culuable too.
         overflow = len(alive) - self.config.population_cap
         if overflow > 0:
-            culuable = sorted([a for a in alive if a.trades_count > 0], key=lambda a: a.fitness)
+            culuable = sorted(
+                [a for a in alive if a.trades_count > 0
+                 or _idle_hours(a) > self.config.max_idle_hours_before_cull],
+                key=lambda a: a.fitness,
+            )
             for agent in culuable[:overflow]:
-                self.db.kill_agent(agent.id, "culled: population cap exceeded")
+                reason = "culled: population cap exceeded" if agent.trades_count > 0 else \
+                    "culled: idle too long with no trades (population cap exceeded)"
+                self.db.kill_agent(agent.id, reason)
             killed_ids = {a.id for a in culuable[:overflow]}
             alive = [a for a in alive if a.id not in killed_ids]
 

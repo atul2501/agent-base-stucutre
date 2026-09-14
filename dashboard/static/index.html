@@ -151,7 +151,8 @@ function strategySummary(genomeJson) {
   try {
     const g = JSON.parse(genomeJson);
     return `${g.coin} EMA ${g.ema_fast}/${g.ema_slow} &middot; RSI${g.rsi_period} `
-         + `(${g.rsi_oversold}/${g.rsi_overbought}) &middot; SL ${g.stop_loss_pct}% / TP ${g.take_profit_pct}% `
+         + `(${g.rsi_oversold}/${g.rsi_overbought}) &middot; ATR ${g.min_atr_pct}-${g.max_atr_pct}% `
+         + `&middot; vol&ge;${g.volume_spike_threshold}x &middot; SL ${g.stop_loss_pct}% / TP ${g.take_profit_pct}% `
          + `&middot; size ${g.position_size_pct}% &middot; hold ${g.max_hold_hours}h`;
   } catch (e) {
     return '-';

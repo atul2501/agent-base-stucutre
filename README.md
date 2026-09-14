@@ -65,19 +65,39 @@ or disable with `--no-dashboard`). It shows, refreshing every 5s:
 
 ## How an agent decides to trade
 
-1. Pull the token's latest candles, L2 order book, open interest and
-   funding rate from Hyperliquid (`market/hyperliquid_client.py`).
-2. Compute an EMA trend + RSI pullback/rally trigger
-   (`strategy/indicators.py`, `strategy/signals.py`).
-3. Score the trigger against order book imbalance, open-interest change,
-   and funding-rate crowding as confirmations/contradictions.
-4. A clearly confirmed setup fires the trade; a clearly contradicted one
+Every signal dimension Hyperliquid's public data supports is in play, and
+every agent has its own thresholds for all of it (32 genome parameters
+total) - that diversity is what lets the population race toward what
+actually works rather than everyone converging on one hand-picked setup.
+
+1. Pull the token's latest candles, L2 order book, open interest, funding
+   rate, mark/oracle premium, and 24h stats from Hyperliquid
+   (`market/hyperliquid_client.py`).
+2. Two **hard pre-filters** gate everything before anything else is even
+   considered: bid/ask spread (skip if too illiquid) and ATR volatility
+   regime (skip if the market's too dead or too chaotic for this agent's
+   comfort zone).
+3. The **trigger**: an EMA trend read + an RSI pullback/rally condition
+   (buy dips in an uptrend, sell rallies in a downtrend).
+4. The trigger is then scored against every other available signal as a
+   confirmation or contradiction: order book imbalance, open-interest
+   change, funding-rate crowding, mark/oracle premium, volume conviction
+   (current candle vs its own recent average), VWAP deviation, MACD
+   momentum, Bollinger %B (price's position within its bands), Stochastic
+   RSI (a faster, more sensitive oversold/overbought read), and 24h macro
+   momentum (`strategy/indicators.py`, `strategy/signals.py`).
+5. A clearly confirmed setup fires the trade; a clearly contradicted one
    holds. A genuinely mixed read is sent to Ollama (`reasoning/ollama_advisor.py`)
    for a judgment call instead of guessing - the "self-understanding"
    fallback. Any failure (no API key, rate limited, unreachable) falls back
    to holding rather than crashing.
-5. Exits are rule-based: stop loss / take profit / max hold time (all
+6. Exits are rule-based: stop loss / take profit / max hold time (all
    genome parameters).
+
+Existing agents from before this indicator set existed load fine -
+`Genome.from_dict` fills in any fields an older genome is missing with
+that field's bounds midpoint, so a trained population never needs a
+`--reset` just because the strategy space grew.
 
 ### Ollama runs in the cloud by default - no local model needed
 
