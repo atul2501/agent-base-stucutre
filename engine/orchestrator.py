@@ -1,6 +1,9 @@
 """Ties market data, signals, paper execution, and the population lifecycle
 together into one repeating cycle. Swing-trading timeframe, so cycles run
 every `cycle_seconds` (default 15 min) rather than tick-by-tick.
+
+The population always trades exactly one token (config.token) - see
+strategy/genome.py and README.md "one token at a time" design.
 """
 from __future__ import annotations
 
@@ -13,40 +16,38 @@ from agents.population import Population
 from reasoning import ollama_advisor
 from strategy.genome import Genome
 from strategy.signals import build_features, evaluate_entry, evaluate_exit
+from trading.live_executor import LiveExecutor
 from trading.paper_executor import close_paper_position, open_paper_position
 
 log = logging.getLogger(__name__)
 
 
 class Orchestrator:
-    def __init__(self, db: Database, hl: HyperliquidClient, population: Population, config: Config):
+    def __init__(self, db: Database, hl: HyperliquidClient, population: Population, config: Config,
+                 live: LiveExecutor | None = None):
         self.db = db
         self.hl = hl
         self.population = population
         self.config = config
-        self.prev_open_interest: dict[str, float] = {}
+        self.live = live
+        self.prev_open_interest: float | None = None
         self.cycle = 0
 
-    def _fetch_snapshots(self) -> dict[str, MarketSnapshot]:
-        snapshots: dict[str, MarketSnapshot] = {}
-        for coin in self.config.symbols:
-            try:
-                snapshots[coin] = self.hl.get_snapshot(coin, self.config.timeframe)
-            except Exception as e:
-                log.warning("Failed to fetch market data for %s: %s", coin, e)
-        return snapshots
+    def _fetch_snapshot(self) -> MarketSnapshot | None:
+        try:
+            return self.hl.get_snapshot(self.config.token, self.config.timeframe)
+        except Exception as e:
+            log.warning("Failed to fetch market data for %s: %s", self.config.token, e)
+            return None
 
-    def _process_exits(self, snapshots: dict[str, MarketSnapshot]) -> None:
+    def _process_exits(self, snap: MarketSnapshot) -> None:
         for agent in self.db.list_alive_agents():
-            genome = Genome.from_dict(agent.genome)
-            snap = snapshots.get(genome.coin)
-            if snap is None:
-                continue
             trade_row = self.db.get_open_trade(agent.id)
             if trade_row is None:
                 continue
+            genome = Genome.from_dict(agent.genome)
 
-            features = build_features(snap, genome, self.prev_open_interest.get(genome.coin))
+            features = build_features(snap, genome, self.prev_open_interest)
             outcome = evaluate_exit(genome, trade_row, features)
             if outcome is None:
                 continue
@@ -62,16 +63,13 @@ class Orchestrator:
             else:
                 self.population.handle_loss(agent.id, pnl)
 
-    def _process_entries(self, snapshots: dict[str, MarketSnapshot]) -> None:
+    def _process_entries(self, snap: MarketSnapshot) -> None:
         for agent in self.db.list_active_traders():
             if self.db.get_open_trade(agent.id) is not None:
                 continue
             genome = Genome.from_dict(agent.genome)
-            snap = snapshots.get(genome.coin)
-            if snap is None:
-                continue
 
-            features = build_features(snap, genome, self.prev_open_interest.get(genome.coin))
+            features = build_features(snap, genome, self.prev_open_interest)
             signal = evaluate_entry(genome, features)
 
             if signal.ambiguous and self.config.ollama_enabled:
@@ -98,23 +96,72 @@ class Orchestrator:
                       agent.id, signal.action.upper(), genome.coin, fill_price,
                       signal.confidence, signal.reasons[0] if signal.reasons else "")
 
+    def _sync_live_exposure(self, snap: MarketSnapshot) -> None:
+        """Real money mirror of the paper population's consensus. Only the
+        current top `live_active_trader_count` agents (db.list_live_traders)
+        count; each contributes one fixed-size 'slot' toward the net
+        long/short direction. See trading/live_executor.py for why this is
+        one aggregate position rather than N independent ones."""
+        if self.live is None:
+            return
+
+        live_traders = self.db.list_live_traders()
+        n_long = 0
+        n_short = 0
+        for agent in live_traders:
+            trade_row = self.db.get_open_trade(agent.id)
+            if trade_row is None:
+                continue
+            if trade_row["coin"] != self.config.token:
+                continue
+            if trade_row["side"] == "long":
+                n_long += 1
+            else:
+                n_short += 1
+
+        net = n_long - n_short
+        per_slot = self.config.live_max_total_notional_usd / max(1, self.config.live_active_trader_count)
+        desired_notional = min(abs(net) * per_slot, self.config.live_max_total_notional_usd)
+        desired_side = "long" if net > 0 else ("short" if net < 0 else None)
+        desired_size = (desired_notional / snap.mid_price) if desired_side else 0.0
+
+        try:
+            results = self.live.adjust_to(self.config.token, desired_side, desired_size, snap.sz_decimals)
+        except Exception as e:
+            log.exception("Live exposure sync failed - leaving real position unchanged")
+            self.db.record_live_order(self.config.token, "sync_error", desired_side or "flat",
+                                       desired_notional, None, "error", str(e)[:300])
+            return
+
+        for r in results:
+            self.db.record_live_order(self.config.token, r["action"], r["side"],
+                                       desired_notional, r["fill_price"], r["status"], r["detail"])
+            if r["status"] == "filled":
+                log.info("LIVE order: %s %s %s (fill=%s)", r["action"], r["side"], self.config.token, r["fill_price"])
+            else:
+                log.error("LIVE order FAILED: %s %s %s - %s", r["action"], r["side"], self.config.token, r["detail"])
+
+        self.db.set_live_position(self.config.token, desired_side, desired_size, desired_notional)
+
     def run_cycle(self) -> None:
         self.cycle += 1
-        snapshots = self._fetch_snapshots()
-        if not snapshots:
+        snap = self._fetch_snapshot()
+        if snap is None:
             log.warning("No market data available this cycle - skipping")
             return
 
-        self._process_exits(snapshots)
+        self._process_exits(snap)
         self.population.refill_if_below_floor()
         stats = self.population.rank_and_enforce()
-        self._process_entries(snapshots)
+        self._process_entries(snap)
+        self._sync_live_exposure(snap)
 
         self.db.record_population_cycle(self.cycle, **stats)
-        self.prev_open_interest = {coin: snap.open_interest for coin, snap in snapshots.items()}
+        self.prev_open_interest = snap.open_interest
 
         log.info(
-            "Cycle %d done | alive=%d active_traders=%d professional=%d best_agent=%s best_pnl=%s",
-            self.cycle, stats["alive_count"], stats["active_trader_count"],
+            "Cycle %d done | %s | alive=%d active_traders=%d professional=%d best_agent=%s best_pnl=%s",
+            self.cycle, "LIVE" if self.config.is_live() else "paper",
+            stats["alive_count"], stats["active_trader_count"],
             stats["professional_count"], stats["best_agent_id"], stats["best_total_pnl"],
         )

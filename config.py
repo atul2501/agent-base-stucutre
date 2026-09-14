@@ -25,10 +25,16 @@ class Config:
     timeframe: str = os.getenv("TIMEFRAME", "1h")
     cycle_seconds: int = int(os.getenv("CYCLE_SECONDS", "900"))
 
-    # --- network + live trading gate ---
-    # Live trading requires BOTH: HL_NETWORK=mainnet AND LIVE_TRADING_CONFIRMED
-    # set to the exact phrase below. Testnet always stays in paper/practice
-    # mode regardless of the confirmation flag.
+    # --- trading mode: the one switch that matters ---
+    # TRADING_MODE=paper (default) - always simulated, never touches the real
+    # exchange, no matter what HL_NETWORK is set to.
+    # TRADING_MODE=live - places real orders on whichever HL_NETWORK you're
+    # pointed at. On testnet that's real testnet orders with fake funds (a
+    # safe way to test the live order-placement code itself). On mainnet
+    # it's real money, so it additionally requires LIVE_TRADING_CONFIRMED to
+    # be set to the exact phrase below - this extra gate only applies to
+    # mainnet, since testnet has nothing real to lose.
+    trading_mode: str = os.getenv("TRADING_MODE", "paper")
     hl_network: str = os.getenv("HL_NETWORK", "testnet")
     hl_wallet_address: str = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
     hl_private_key: str = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
@@ -65,7 +71,11 @@ class Config:
     slippage_bps: float = 2.0  # assumed slippage in basis points on paper fills
 
     def is_live(self) -> bool:
-        return self.hl_network.lower() == "mainnet" and self.live_trading_confirmed == LIVE_CONFIRMATION_PHRASE
+        if self.trading_mode.lower() != "live":
+            return False
+        if self.hl_network.lower() == "mainnet":
+            return self.live_trading_confirmed == LIVE_CONFIRMATION_PHRASE
+        return True  # live on testnet is fake money - no extra confirmation needed
 
     def is_paper(self) -> bool:
         return not self.is_live()

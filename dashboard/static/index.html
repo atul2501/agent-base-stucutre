@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Swarm Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131722; --panel-2: #1a1f2e; --border: #232838;
+    --text: #e6e8ee; --muted: #8b93a7; --accent: #4f8cff; --green: #26c281;
+    --red: #ef5a6f; --amber: #e8b64c; --purple: #a875ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 24px; padding-bottom: 60px;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .badge {
+    padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--panel-2); display: inline-flex; align-items: center; gap: 6px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.green { background: var(--green); } .dot.red { background: var(--red); }
+  .dot.amber { background: var(--amber); } .dot.grey { background: var(--muted); }
+  .badge.live { color: var(--red); border-color: rgba(239,90,111,0.4); background: rgba(239,90,111,0.08); }
+  .badge.paper { color: var(--green); border-color: rgba(38,194,129,0.4); background: rgba(38,194,129,0.08); }
+  .badge.mainnet { color: var(--amber); } .badge.testnet { color: var(--accent); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 26px; font-weight: 700; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+
+  section { margin-bottom: 28px; }
+  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .chart-wrap { height: 240px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  tbody tr:hover { background: var(--panel-2); }
+  .tier-pro { color: var(--purple); font-weight: 600; }
+  .tier-std { color: var(--muted); }
+  .flag { font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--border); }
+  .flag.on { color: var(--accent); border-color: rgba(79,140,255,0.4); }
+  .side-long { color: var(--green); } .side-short { color: var(--red); }
+  .result-win { color: var(--green); } .result-loss { color: var(--red); } .result-open { color: var(--muted); }
+  .table-scroll { overflow-x: auto; }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title">Agent Swarm <span>loading...</span></h1>
+    <div class="badges" id="badges"></div>
+  </header>
+
+  <div class="grid" id="stat-cards"></div>
+
+  <section>
+    <h2>Best Agent PnL by Cycle</h2>
+    <div class="panel chart-wrap"><canvas id="pnlChart"></canvas></div>
+  </section>
+
+  <section id="live-section" style="display:none">
+    <h2>Live Position (Real Money)</h2>
+    <div class="panel">
+      <div id="live-position" style="margin-bottom:14px;"></div>
+      <div class="table-scroll">
+        <table id="live-orders-table">
+          <thead><tr><th>Time</th><th>Action</th><th>Side</th><th>Fill Price</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Leaderboard (top 30 by fitness)</h2>
+    <div class="panel table-scroll">
+      <table id="leaderboard-table">
+        <thead><tr>
+          <th>ID</th><th>Tier</th><th>Gen</th><th>Flags</th><th>Wins</th><th>Losses</th>
+          <th>Streak</th><th>Trades</th><th>Balance</th><th>Total PnL</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Recent Trades</h2>
+    <div class="panel table-scroll">
+      <table id="trades-table">
+        <thead><tr>
+          <th>Agent</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th>
+          <th>Result</th><th>Reason</th><th>Opened</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Auto-refreshing every 5s &middot; paper trading unless explicitly armed for live</footer>
+</div>
+
+<script>
+const fmt = (n, d=2) => (n === null || n === undefined || isNaN(n)) ? "-" : Number(n).toLocaleString(undefined, {minimumFractionDigits:d, maximumFractionDigits:d});
+const pct = (n) => (n === null || n === undefined) ? "-" : (Number(n)*100).toFixed(1) + "%";
+const ago = (iso) => {
+  if (!iso) return "-";
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime())/1000));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  return Math.floor(s/3600) + "h ago";
+};
+
+let pnlChart = null;
+
+function ollamaBadge(status) {
+  const map = {
+    ready: ["green", "Ollama: ready"],
+    disabled: ["grey", "Ollama: disabled"],
+    not_configured: ["amber", "Ollama: no API key"],
+    invalid_api_key: ["red", "Ollama: bad API key"],
+    rate_limited: ["amber", "Ollama: rate limited"],
+    model_unavailable: ["red", "Ollama: model unavailable"],
+    unreachable: ["red", "Ollama: unreachable"],
+    unknown: ["grey", "Ollama: checking..."],
+  };
+  const [color, label] = map[status.state] || ["grey", "Ollama: " + status.state];
+  return `<span class="badge"><span class="dot ${color}"></span>${label}</span>`;
+}
+
+async function refresh() {
+  try {
+    const [overview, population, leaderboard, trades, pnlHistory] = await Promise.all([
+      fetch('/api/overview').then(r => r.json()),
+      fetch('/api/population').then(r => r.json()),
+      fetch('/api/leaderboard').then(r => r.json()),
+      fetch('/api/trades').then(r => r.json()),
+      fetch('/api/pnl_history').then(r => r.json()),
+    ]);
+
+    document.getElementById('title').innerHTML = `Agent Swarm <span>${overview.token} &middot; ${overview.timeframe}</span>`;
+
+    const badges = [];
+    badges.push(`<span class="badge ${overview.network}">${overview.network.toUpperCase()}</span>`);
+    badges.push(`<span class="badge ${overview.mode}">${overview.mode === 'live' ? 'LIVE - REAL MONEY' : 'PAPER TRADING'}</span>`);
+    badges.push(ollamaBadge(overview.ollama));
+    badges.push(`<span class="badge">Cycle ${overview.last_cycle ? overview.last_cycle.cycle : 0} &middot; ${overview.last_cycle ? ago(overview.last_cycle.ran_at) : 'not started'}</span>`);
+    document.getElementById('badges').innerHTML = badges.join('');
+
+    const totalPnl = population.total_realized_pnl || 0;
+    const cards = [
+      ["Alive Agents", population.alive_count || 0, `of ${overview.population_cap} cap`],
+      ["Active Traders", population.active_trader_count || 0, `of top ${overview.active_trader_count}`],
+      ["Live Traders", population.live_trader_count || 0, overview.is_live ? `of top ${overview.live_active_trader_count}` : 'not armed'],
+      ["Professional Tier", population.professional_count || 0, "proven lineages"],
+      ["Total Realized PnL", (totalPnl>=0?'+':'') + '$' + fmt(totalPnl), `${population.closed_trades||0} closed trades`],
+      ["Overall Win Rate", pct(population.overall_win_rate), "across all closed trades"],
+      ["Max Generation", population.max_generation || 0, `${population.total_ever||0} agents ever created`],
+      ["Avg Balance (alive)", '$' + fmt(population.avg_balance), "paper balance"],
+    ];
+    document.getElementById('stat-cards').innerHTML = cards.map(([label, value, sub]) => `
+      <div class="card">
+        <div class="label">${label}</div>
+        <div class="value ${typeof value === 'string' && value.startsWith('+') ? 'pos' : (typeof value === 'string' && value.startsWith('-') ? 'neg' : '')}">${value}</div>
+        <div class="sub">${sub}</div>
+      </div>`).join('');
+
+    // pnl chart
+    const labels = pnlHistory.map(r => 'c' + r.cycle);
+    const data = pnlHistory.map(r => r.best_total_pnl || 0);
+    if (!pnlChart) {
+      const ctx = document.getElementById('pnlChart').getContext('2d');
+      pnlChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'Best agent total PnL ($)', data, borderColor: '#4f8cff',
+                 backgroundColor: 'rgba(79,140,255,0.08)', fill: true, tension: 0.25, pointRadius: 0 }] },
+        options: { responsive: true, maintainAspectRatio: false,
+          scales: { x: { ticks: { color: '#8b93a7' }, grid: { color: '#232838' } },
+                    y: { ticks: { color: '#8b93a7' }, grid: { color: '#232838' } } },
+          plugins: { legend: { labels: { color: '#e6e8ee' } } } }
+      });
+    } else {
+      pnlChart.data.labels = labels;
+      pnlChart.data.datasets[0].data = data;
+      pnlChart.update('none');
+    }
+
+    // leaderboard
+    const lbBody = document.querySelector('#leaderboard-table tbody');
+    lbBody.innerHTML = leaderboard.length ? leaderboard.map(a => `
+      <tr>
+        <td>#${a.id}</td>
+        <td class="${a.tier === 'professional' ? 'tier-pro' : 'tier-std'}">${a.tier}</td>
+        <td>${a.generation}</td>
+        <td>${a.is_active_trader ? '<span class="flag on">TRADER</span>' : ''} ${a.is_live_trader ? '<span class="flag on">LIVE</span>' : ''}</td>
+        <td>${a.wins}</td><td>${a.losses}</td><td>${a.win_streak}</td><td>${a.trades_count}</td>
+        <td>$${fmt(a.balance)}</td>
+        <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
+      </tr>`).join('') : '<tr><td colspan="10" class="empty">No agents yet</td></tr>';
+
+    // trades
+    const trBody = document.querySelector('#trades-table tbody');
+    trBody.innerHTML = trades.length ? trades.map(t => `
+      <tr>
+        <td>#${t.agent_id}</td>
+        <td class="side-${t.side}">${t.side.toUpperCase()}</td>
+        <td>${fmt(t.entry_price, 4)}</td>
+        <td>${t.exit_price ? fmt(t.exit_price, 4) : '-'}</td>
+        <td class="${(t.pnl||0) >= 0 ? 'pos' : 'neg'}">${t.pnl !== null ? ((t.pnl>=0?'+':'')+'$'+fmt(t.pnl)) : '-'}</td>
+        <td class="result-${t.result}">${t.result}</td>
+        <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
+        <td>${ago(t.opened_at)}</td>
+      </tr>`).join('') : '<tr><td colspan="8" class="empty">No trades yet</td></tr>';
+
+    // live section
+    if (overview.is_live) {
+      document.getElementById('live-section').style.display = '';
+      const live = await fetch('/api/live').then(r => r.json());
+      const pos = live.position;
+      document.getElementById('live-position').innerHTML = pos && pos.side ? `
+        <span class="badge side-${pos.side}">${pos.side.toUpperCase()} ${fmt(pos.size,4)} ${overview.token}</span>
+        <span class="badge">$${fmt(pos.notional)} notional</span>
+        <span class="badge">cap $${fmt(overview.live_max_total_notional_usd)}</span>
+        <span class="badge">${overview.live_max_leverage}x leverage</span>` :
+        `<span class="badge">Flat - no live position</span>`;
+      const loBody = document.querySelector('#live-orders-table tbody');
+      loBody.innerHTML = live.recent_orders.length ? live.recent_orders.map(o => `
+        <tr>
+          <td>${ago(o.placed_at)}</td><td>${o.action}</td>
+          <td class="side-${o.side}">${o.side}</td>
+          <td>${o.fill_price ? fmt(o.fill_price,4) : '-'}</td>
+          <td class="${o.status==='filled'?'pos':'neg'}">${o.status}</td>
+          <td title="${o.detail||''}">${(o.detail||'').slice(0,50)}</td>
+        </tr>`).join('') : '<tr><td colspan="6" class="empty">No live orders yet</td></tr>';
+    } else {
+      document.getElementById('live-section').style.display = 'none';
+    }
+  } catch (e) {
+    console.error('dashboard refresh failed', e);
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

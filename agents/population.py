@@ -40,10 +40,10 @@ class Population:
     def seed_if_empty(self) -> None:
         if self.db.count_alive() > 0:
             return
-        log.info("No agents found - seeding initial population of %d", self.config.initial_population)
+        log.info("No agents found - seeding initial population of %d for %s",
+                  self.config.initial_population, self.config.token)
         for _ in range(self.config.initial_population):
-            coin = self.rng.choice(self.config.symbols)
-            genome = Genome.random(coin, self.config.timeframe, self.rng)
+            genome = Genome.random(self.config.token, self.config.timeframe, self.rng)
             self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
 
     def refill_if_below_floor(self) -> None:
@@ -56,10 +56,9 @@ class Population:
         for _ in range(needed):
             shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
             if shared:
-                genome = Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3, coins=self.config.symbols)
+                genome = Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3)
             else:
-                coin = self.rng.choice(self.config.symbols)
-                genome = Genome.random(coin, self.config.timeframe, self.rng)
+                genome = Genome.random(self.config.token, self.config.timeframe, self.rng)
             self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
 
     # ---- trade outcome -> lifecycle ----
@@ -72,7 +71,7 @@ class Population:
 
         parent_genome = Genome.from_dict(agent.genome)
         for _ in range(self.config.children_per_win):
-            child_genome = parent_genome.mutate(self.rng, coins=self.config.symbols)
+            child_genome = parent_genome.mutate(self.rng)
             self.db.create_agent(
                 child_genome.to_dict(),
                 balance=self.config.starting_paper_balance,
@@ -124,6 +123,14 @@ class Population:
         ranked = sorted(alive, key=lambda a: a.fitness, reverse=True)
         top_traders = ranked[: self.config.active_trader_count]
         self.db.set_active_traders({a.id for a in top_traders})
+
+        # Live capital only ever goes to the most proven subset of the
+        # already-proven top traders - see trading/live_executor.py.
+        if self.config.is_live():
+            top_live = top_traders[: self.config.live_active_trader_count]
+            self.db.set_live_traders({a.id for a in top_live})
+        else:
+            self.db.set_live_traders(set())
 
         best = ranked[0] if ranked else None
         professional_count = self.db.count_professional()

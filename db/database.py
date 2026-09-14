@@ -56,6 +56,7 @@ class Database:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")  # lets the dashboard read concurrently
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -118,6 +119,22 @@ class Database:
             qmarks = ",".join("?" for _ in agent_ids)
             self.conn.execute(
                 f"UPDATE agents SET is_active_trader = 1 WHERE id IN ({qmarks})",
+                tuple(agent_ids),
+            )
+        self.conn.commit()
+
+    def list_live_traders(self) -> list[AgentRow]:
+        rows = self.conn.execute(
+            "SELECT * FROM agents WHERE status = 'alive' AND is_live_trader = 1"
+        ).fetchall()
+        return [self._row_to_agent(r) for r in rows]
+
+    def set_live_traders(self, agent_ids: set[int]) -> None:
+        self.conn.execute("UPDATE agents SET is_live_trader = 0 WHERE status = 'alive'")
+        if agent_ids:
+            qmarks = ",".join("?" for _ in agent_ids)
+            self.conn.execute(
+                f"UPDATE agents SET is_live_trader = 1 WHERE id IN ({qmarks})",
                 tuple(agent_ids),
             )
         self.conn.commit()
@@ -251,3 +268,102 @@ class Database:
              best_agent_id, best_total_pnl, now_iso()),
         )
         self.conn.commit()
+
+    def recent_population_cycles(self, limit: int = 200) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM population_cycles ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    # ---- meta (single-token guard / step-0 reset) ----
+
+    def get_meta(self, key: str) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+
+    def reset_all(self) -> None:
+        """Wipe every agent/trade/strategy/live record - 'step 0', forget everything."""
+        for table in ("trades", "strategy_shares", "population_cycles", "live_orders",
+                      "live_position", "agents", "meta"):
+            self.conn.execute(f"DELETE FROM {table}")
+        self.conn.execute("DELETE FROM sqlite_sequence")
+        self.conn.commit()
+
+    # ---- live position (single aggregate real position per coin) ----
+
+    def get_live_position(self) -> Optional[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM live_position WHERE id = 1").fetchone()
+
+    def set_live_position(self, coin: str, side: Optional[str], size: float, notional: float) -> None:
+        self.conn.execute(
+            """INSERT INTO live_position (id, coin, side, size, notional, updated_at)
+               VALUES (1, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 coin = excluded.coin, side = excluded.side, size = excluded.size,
+                 notional = excluded.notional, updated_at = excluded.updated_at""",
+            (coin, side, size, notional, now_iso()),
+        )
+        self.conn.commit()
+
+    def record_live_order(self, coin: str, action: str, side: str, notional: float,
+                           fill_price: Optional[float], status: str, detail: str = "") -> None:
+        self.conn.execute(
+            """INSERT INTO live_orders (coin, action, side, notional, fill_price, status, detail, placed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (coin, action, side, notional, fill_price, status, detail, now_iso()),
+        )
+        self.conn.commit()
+
+    def recent_live_orders(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM live_orders ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    # ---- dashboard aggregates ----
+
+    def realized_pnl_stats(self) -> dict:
+        row = self.conn.execute(
+            """SELECT
+                 COALESCE(SUM(pnl), 0) AS total_pnl,
+                 COUNT(*) AS closed_trades,
+                 SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) AS wins,
+                 SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) AS losses
+               FROM trades WHERE result IN ('win', 'loss')"""
+        ).fetchone()
+        closed = row["closed_trades"] or 0
+        wins = row["wins"] or 0
+        return {
+            "total_realized_pnl": row["total_pnl"],
+            "closed_trades": closed,
+            "wins": wins,
+            "losses": row["losses"] or 0,
+            "win_rate": (wins / closed) if closed else 0.0,
+        }
+
+    def leaderboard(self, limit: int = 25) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT * FROM agents WHERE status = 'alive'
+               ORDER BY (total_pnl + CASE WHEN (wins + losses) > 0
+                         THEN CAST(wins AS REAL) / (wins + losses) ELSE 0 END) DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+    def recent_trades(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    def total_agents_ever(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
+
+    def max_generation(self) -> int:
+        row = self.conn.execute("SELECT MAX(generation) FROM agents").fetchone()
+        return row[0] or 0

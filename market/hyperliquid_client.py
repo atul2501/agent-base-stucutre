@@ -22,6 +22,7 @@ class MarketSnapshot:
     candles: list[dict]          # oldest -> newest, keys: t,o,h,l,c,v
     bid_levels: list[dict]       # [{px, sz}, ...] best first
     ask_levels: list[dict]
+    sz_decimals: int             # exchange's required size precision for this coin
 
 
 class HyperliquidClient:
@@ -65,4 +66,9 @@ class HyperliquidClient:
             candles=candles,
             bid_levels=bid_levels,
             ask_levels=ask_levels,
+            sz_decimals=int(universe[idx]["szDecimals"]),
         )
+
+    def is_valid_coin(self, coin: str) -> bool:
+        meta, _ = self.info.meta_and_asset_ctxs()
+        return any(a["name"] == coin for a in meta["universe"])

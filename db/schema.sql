@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS agents (
     status TEXT NOT NULL DEFAULT 'alive',        -- alive | dead
     tier TEXT NOT NULL DEFAULT 'standard',       -- standard | professional
     is_active_trader INTEGER NOT NULL DEFAULT 0,
+    is_live_trader INTEGER NOT NULL DEFAULT 0,
     balance REAL NOT NULL,
     wins INTEGER NOT NULL DEFAULT 0,
     losses INTEGER NOT NULL DEFAULT 0,
@@ -62,4 +63,38 @@ CREATE TABLE IF NOT EXISTS population_cycles (
     best_agent_id INTEGER,
     best_total_pnl REAL,
     ran_at TEXT NOT NULL
+);
+
+-- Simple key/value store: tracks which token the population was built for
+-- (see main.py --reset), so switching tokens without an explicit reset is
+-- refused rather than silently mixing strategies learned on a different asset.
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Real Hyperliquid perp accounts hold ONE net position per (account, coin),
+-- so "top N agents trading live" is represented as one aggregate real
+-- position that tracks the net long/short consensus of those agents' paper
+-- positions (see README - Live trading design). This row is that ground
+-- truth mirror, reconciled against the real exchange each cycle.
+CREATE TABLE IF NOT EXISTS live_position (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    coin TEXT NOT NULL,
+    side TEXT,
+    size REAL NOT NULL DEFAULT 0,
+    notional REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS live_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coin TEXT NOT NULL,
+    action TEXT NOT NULL,        -- open | increase | decrease | close | flip
+    side TEXT NOT NULL,
+    notional REAL NOT NULL,
+    fill_price REAL,
+    status TEXT NOT NULL,        -- filled | error
+    detail TEXT,
+    placed_at TEXT NOT NULL
 );

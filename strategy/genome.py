@@ -71,8 +71,13 @@ class Genome:
             position_size_pct=round(u("position_size_pct"), 2),
         )
 
-    def mutate(self, rng: random.Random, mutation_rate: float = 0.25, coins: list[str] | None = None) -> "Genome":
-        """Return a mutated copy - this is how a winning agent's children differ from it."""
+    def mutate(self, rng: random.Random, mutation_rate: float = 0.25) -> "Genome":
+        """Return a mutated copy - this is how a winning agent's children differ from it.
+
+        Coin is intentionally never mutated: the population is scoped to one
+        token at a time by design (see Population "step 0" reset) so every
+        agent stays specialized to it.
+        """
         child = copy.deepcopy(self)
         numeric_fields = [f for f in BOUNDS.keys()]
         for field_name in numeric_fields:
@@ -91,9 +96,5 @@ class Genome:
 
         if child.ema_slow <= child.ema_fast:
             child.ema_slow = child.ema_fast + 5
-
-        # Small chance a child explores a different market than its parent.
-        if coins and rng.random() < 0.1:
-            child.coin = rng.choice(coins)
 
         return child
