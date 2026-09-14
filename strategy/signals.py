@@ -266,8 +266,13 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
     return Signal(candidate, confidence, score, reasons, ambiguous=False)
 
 
-def evaluate_exit(genome: Genome, trade_row, f: Features) -> tuple[str, str] | None:
-    """Returns (result, reason) if the open position should close, else None."""
+def evaluate_exit(genome: Genome, trade_row, f: Features, now: datetime | None = None) -> tuple[str, str] | None:
+    """Returns (result, reason) if the open position should close, else None.
+
+    `now` defaults to wall-clock time for live trading; the backtest engine
+    (backtest/engine.py) passes the simulated candle timestamp instead so
+    the exact same function drives both live and backtested max-hold logic.
+    """
     side = trade_row["side"]
     entry = trade_row["entry_price"]
     price = f.mid_price
@@ -283,7 +288,8 @@ def evaluate_exit(genome: Genome, trade_row, f: Features) -> tuple[str, str] | N
         return "loss", f"stop loss hit ({pnl_pct:.2f}%)"
 
     opened_at = datetime.fromisoformat(trade_row["opened_at"])
-    hours_open = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600.0
+    current_time = now if now is not None else datetime.now(timezone.utc)
+    hours_open = (current_time - opened_at).total_seconds() / 3600.0
     if hours_open >= genome.max_hold_hours:
         result = "win" if pnl_pct > 0 else "loss"
         return result, f"max hold {genome.max_hold_hours}h reached ({pnl_pct:.2f}%)"

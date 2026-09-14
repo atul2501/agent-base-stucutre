@@ -16,6 +16,12 @@
 - Active traders: only the top `active_trader_count` alive agents by fitness
   are allowed to open new positions each cycle; the rest keep tracking but
   wait their turn.
+- Backtest pre-screening: every newly-born agent (seeded, floor refill, or
+  a winner's children) is chosen from several candidate genomes by real
+  historical performance (backtest/engine.py), not committed blind. This
+  doesn't touch the live do-or-die mechanic at all - it only changes what
+  genome an agent starts its live life with, so agents entering the real
+  gauntlet start from a better-than-random point.
 """
 from __future__ import annotations
 
@@ -23,6 +29,7 @@ import logging
 import random
 from datetime import datetime, timezone
 
+from backtest.engine import backtest_genome, fitness_score
 from config import Config
 from db.database import AgentRow, Database
 from strategy.genome import Genome
@@ -36,10 +43,30 @@ def _idle_hours(agent: AgentRow) -> float:
 
 
 class Population:
-    def __init__(self, db: Database, config: Config, rng: random.Random | None = None):
+    def __init__(self, db: Database, config: Config, rng: random.Random | None = None,
+                 backtest_candles: list[dict] | None = None,
+                 backtest_funding: list[tuple[int, float, float]] | None = None):
         self.db = db
         self.config = config
         self.rng = rng or random.Random()
+        self.backtest_candles = backtest_candles
+        self.backtest_funding = backtest_funding or []
+
+    def _pick_best(self, candidates: list[Genome]) -> Genome:
+        """Backtest each candidate genome against real recent history and
+        keep the best-scoring one. Falls back to the first candidate
+        untouched if backtesting is disabled or no historical data was
+        supplied (e.g. in tests) - never blocks agent creation."""
+        if not self.config.backtest_enabled or not self.backtest_candles or len(candidates) == 1:
+            return candidates[0]
+        best_genome, best_score = candidates[0], None
+        for genome in candidates:
+            result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
+                                      starting_balance=self.config.starting_paper_balance)
+            score = fitness_score(result)
+            if best_score is None or score > best_score:
+                best_genome, best_score = genome, score
+        return best_genome
 
     # ---- seeding ----
 
@@ -49,7 +76,9 @@ class Population:
         log.info("No agents found - seeding initial population of %d for %s",
                   self.config.initial_population, self.config.token)
         for _ in range(self.config.initial_population):
-            genome = Genome.random(self.config.token, self.config.timeframe, self.rng)
+            candidates = [Genome.random(self.config.token, self.config.timeframe, self.rng)
+                          for _ in range(self.config.backtest_candidates)]
+            genome = self._pick_best(candidates)
             self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
 
     def refill_if_below_floor(self) -> None:
@@ -60,11 +89,14 @@ class Population:
         log.info("Population (%d) below floor (%d) - spawning %d replacements",
                   alive, self.config.min_population_floor, needed)
         for _ in range(needed):
-            shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
-            if shared:
-                genome = Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3)
-            else:
-                genome = Genome.random(self.config.token, self.config.timeframe, self.rng)
+            candidates = []
+            for _ in range(self.config.backtest_candidates):
+                shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
+                if shared:
+                    candidates.append(Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3))
+                else:
+                    candidates.append(Genome.random(self.config.token, self.config.timeframe, self.rng))
+            genome = self._pick_best(candidates)
             self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
 
     # ---- trade outcome -> lifecycle ----
@@ -77,7 +109,8 @@ class Population:
 
         parent_genome = Genome.from_dict(agent.genome)
         for _ in range(self.config.children_per_win):
-            child_genome = parent_genome.mutate(self.rng)
+            candidates = [parent_genome.mutate(self.rng) for _ in range(self.config.backtest_candidates)]
+            child_genome = self._pick_best(candidates)
             self.db.create_agent(
                 child_genome.to_dict(),
                 balance=self.config.starting_paper_balance,

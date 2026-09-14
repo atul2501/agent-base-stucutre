@@ -49,6 +49,15 @@ class Config:
     population_cap: int = int(os.getenv("POPULATION_CAP", "500"))
     active_trader_count: int = int(os.getenv("ACTIVE_TRADER_COUNT", "50"))
     min_population_floor: int = int(os.getenv("MIN_POPULATION_FLOOR", "50"))
+    # New agents are pre-screened against real historical data before they
+    # enter the live do-or-die population (see backtest/engine.py) - this
+    # doesn't change live trading at all, it just means an agent is BORN
+    # with a better-than-random genome. Hyperliquid caps a single candle
+    # request at ~5000 bars (~17 days of 5m data); default sits safely
+    # under that.
+    backtest_enabled: bool = _bool("BACKTEST_ENABLED", True)
+    backtest_lookback_hours: int = int(os.getenv("BACKTEST_LOOKBACK_HOURS", "360"))
+    backtest_candidates: int = int(os.getenv("BACKTEST_CANDIDATES", "5"))
     # An agent whose regime filters never admit a trade would otherwise
     # squat a population slot forever (the normal cull only considers agents
     # that have completed >=1 trade). Past this many idle hours, it becomes

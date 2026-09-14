@@ -80,3 +80,12 @@ class HyperliquidClient:
     def is_valid_coin(self, coin: str) -> bool:
         meta, _ = self.info.meta_and_asset_ctxs()
         return any(a["name"] == coin for a in meta["universe"])
+
+    def get_funding_history(self, coin: str, lookback_hours: int) -> list[tuple[int, float, float]]:
+        """(timestamp_ms, funding, premium) tuples, oldest -> newest. Used
+        by backtest/engine.py - this is real historical data (unlike order
+        book / open interest, which are snapshot-only)."""
+        end = int(time.time() * 1000)
+        start = end - lookback_hours * 60 * 60 * 1000
+        raw = self.info.funding_history(coin, start, end)
+        return [(int(f["time"]), float(f["fundingRate"]), float(f["premium"])) for f in raw]

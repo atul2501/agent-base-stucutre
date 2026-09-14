@@ -130,7 +130,20 @@ def main() -> None:
         except Exception:
             log.exception("Failed to initialize live executor - falling back to paper for this run")
 
-    population = Population(db, CONFIG)
+    backtest_candles, backtest_funding = [], []
+    if CONFIG.backtest_enabled:
+        try:
+            backtest_snap = hl.get_snapshot(CONFIG.token, CONFIG.timeframe,
+                                             candle_lookback_hours=CONFIG.backtest_lookback_hours)
+            backtest_candles = backtest_snap.candles
+            backtest_funding = hl.get_funding_history(CONFIG.token, CONFIG.backtest_lookback_hours)
+            log.info("Backtest pre-screening ready: %d historical candles, %d funding points",
+                      len(backtest_candles), len(backtest_funding))
+        except Exception:
+            log.exception("Failed to fetch historical data for backtest pre-screening - "
+                           "new agents will be born from unscreened random/mutated genomes this run")
+
+    population = Population(db, CONFIG, backtest_candles=backtest_candles, backtest_funding=backtest_funding)
     population.seed_if_empty()
     orchestrator = Orchestrator(db, hl, population, CONFIG, live=live_executor)
 
