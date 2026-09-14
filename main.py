@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import faulthandler
 import logging
+import signal
 import sys
 import threading
 import time
@@ -93,66 +94,82 @@ def enforce_single_token_guard(db: Database, reset: bool) -> None:
         sys.exit(1)
 
 
+def _handle_sigterm(signum, frame) -> None:
+    """SIGTERM is how `kill <pid>`, `systemctl stop`, and `docker stop` all
+    ask a process to exit by default - unlike Ctrl+C's SIGINT, Python does
+    NOT turn it into a catchable exception on its own. Without this, an
+    unattended deployment (EC2, systemd, a container) would die abruptly
+    on every stop instead of hitting the same graceful shutdown path."""
+    raise KeyboardInterrupt()
+
+
 def main() -> None:
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     args = parse_args()
+    db: Database | None = None
 
-    log.info("=" * 70)
-    log.info("%s MODE | network=%s | token=%s",
-              "LIVE" if CONFIG.is_live() else "PAPER TRADING",
-              CONFIG.hl_network, CONFIG.token)
-    if CONFIG.is_live():
-        if CONFIG.hl_network.lower() == "mainnet":
-            log.warning("LIVE TRADING IS ARMED ON MAINNET. Real orders, real money.")
-        else:
-            log.warning("LIVE TRADING IS ARMED ON TESTNET. Real orders, fake testnet funds.")
-        log.warning("Hard caps: $%.2f total notional, top %d agents, %dx leverage",
-                     CONFIG.live_max_total_notional_usd, CONFIG.live_active_trader_count,
-                     CONFIG.live_max_leverage)
-    log.info("timeframe=%s cycle=%ds population_cap=%d active_traders=%d",
-              CONFIG.timeframe, CONFIG.cycle_seconds, CONFIG.population_cap, CONFIG.active_trader_count)
-    log.info("=" * 70)
-
-    db = Database(CONFIG.db_path)
-    enforce_single_token_guard(db, args.reset)
-
-    hl = HyperliquidClient(network="mainnet" if CONFIG.hl_network == "mainnet" else "testnet")
-    if not hl.is_valid_coin(CONFIG.token):
-        log.error("TOKEN=%s is not a valid Hyperliquid perp symbol.", CONFIG.token)
-        sys.exit(1)
-
-    ollama_advisor.check_health_async()
-
-    live_executor = None
-    if CONFIG.is_live():
-        try:
-            live_executor = LiveExecutor(CONFIG)
-            log.info("Live executor ready for wallet %s", live_executor.address)
-        except Exception:
-            log.exception("Failed to initialize live executor - falling back to paper for this run")
-
-    backtest_candles, backtest_funding = [], []
-    if CONFIG.backtest_enabled:
-        try:
-            backtest_snap = hl.get_snapshot(CONFIG.token, CONFIG.timeframe,
-                                             candle_lookback_hours=CONFIG.backtest_lookback_hours)
-            backtest_candles = backtest_snap.candles
-            backtest_funding = hl.get_funding_history(CONFIG.token, CONFIG.backtest_lookback_hours)
-            log.info("Backtest pre-screening ready: %d historical candles, %d funding points",
-                      len(backtest_candles), len(backtest_funding))
-        except Exception:
-            log.exception("Failed to fetch historical data for backtest pre-screening - "
-                           "new agents will be born from unscreened random/mutated genomes this run")
-
-    population = Population(db, CONFIG, backtest_candles=backtest_candles, backtest_funding=backtest_funding)
-    population.seed_if_empty()
-    orchestrator = Orchestrator(db, hl, population, CONFIG, live=live_executor)
-
-    if not args.no_dashboard:
-        from dashboard.server import run_dashboard
-        threading.Thread(target=run_dashboard, args=(CONFIG,), daemon=True).start()
-        log.info("Dashboard: http://%s:%d", CONFIG.dashboard_host, CONFIG.dashboard_port)
-
+    # The whole body - including startup (historical data fetch, ~20-30s of
+    # backtest-screened seeding) - is inside this try, not just the main
+    # loop. A signal arriving mid-startup used to produce an uncaught
+    # traceback instead of a graceful shutdown; verified by reproducing it
+    # with a real SIGTERM sent during startup before this fix.
     try:
+        log.info("=" * 70)
+        log.info("%s MODE | network=%s | token=%s",
+                  "LIVE" if CONFIG.is_live() else "PAPER TRADING",
+                  CONFIG.hl_network, CONFIG.token)
+        if CONFIG.is_live():
+            if CONFIG.hl_network.lower() == "mainnet":
+                log.warning("LIVE TRADING IS ARMED ON MAINNET. Real orders, real money.")
+            else:
+                log.warning("LIVE TRADING IS ARMED ON TESTNET. Real orders, fake testnet funds.")
+            log.warning("Hard caps: $%.2f total notional, top %d agents, %dx leverage",
+                         CONFIG.live_max_total_notional_usd, CONFIG.live_active_trader_count,
+                         CONFIG.live_max_leverage)
+        log.info("timeframe=%s cycle=%ds population_cap=%d active_traders=%d",
+                  CONFIG.timeframe, CONFIG.cycle_seconds, CONFIG.population_cap, CONFIG.active_trader_count)
+        log.info("=" * 70)
+
+        db = Database(CONFIG.db_path)
+        enforce_single_token_guard(db, args.reset)
+
+        hl = HyperliquidClient(network="mainnet" if CONFIG.hl_network == "mainnet" else "testnet")
+        if not hl.is_valid_coin(CONFIG.token):
+            log.error("TOKEN=%s is not a valid Hyperliquid perp symbol.", CONFIG.token)
+            sys.exit(1)
+
+        ollama_advisor.check_health_async()
+
+        live_executor = None
+        if CONFIG.is_live():
+            try:
+                live_executor = LiveExecutor(CONFIG)
+                log.info("Live executor ready for wallet %s", live_executor.address)
+            except Exception:
+                log.exception("Failed to initialize live executor - falling back to paper for this run")
+
+        backtest_candles, backtest_funding = [], []
+        if CONFIG.backtest_enabled:
+            try:
+                backtest_snap = hl.get_snapshot(CONFIG.token, CONFIG.timeframe,
+                                                 candle_lookback_hours=CONFIG.backtest_lookback_hours)
+                backtest_candles = backtest_snap.candles
+                backtest_funding = hl.get_funding_history(CONFIG.token, CONFIG.backtest_lookback_hours)
+                log.info("Backtest pre-screening ready: %d historical candles, %d funding points",
+                          len(backtest_candles), len(backtest_funding))
+            except Exception:
+                log.exception("Failed to fetch historical data for backtest pre-screening - "
+                               "new agents will be born from unscreened random/mutated genomes this run")
+
+        population = Population(db, CONFIG, backtest_candles=backtest_candles, backtest_funding=backtest_funding)
+        population.seed_if_empty()
+        orchestrator = Orchestrator(db, hl, population, CONFIG, live=live_executor)
+
+        if not args.no_dashboard:
+            from dashboard.server import run_dashboard
+            threading.Thread(target=run_dashboard, args=(CONFIG,), daemon=True).start()
+            log.info("Dashboard: http://%s:%d", CONFIG.dashboard_host, CONFIG.dashboard_port)
+
         while True:
             try:
                 orchestrator.run_cycle()
@@ -160,14 +177,17 @@ def main() -> None:
                 log.exception("Cycle %d failed - will retry next interval", orchestrator.cycle)
             time.sleep(CONFIG.cycle_seconds)
     except KeyboardInterrupt:
-        # Ctrl+C never deletes anything - agent/trade history stays in
-        # CONFIG.db_path exactly as it is. Only --reset wipes it.
-        log.info("Shutting down (Ctrl+C). Agent data preserved in %s - "
+        # Fires on Ctrl+C (SIGINT) or a stop signal (SIGTERM, e.g. `kill`,
+        # `systemctl stop`, `docker stop`) - never deletes anything, agent/
+        # trade history stays in CONFIG.db_path exactly as it is. Only
+        # --reset wipes it.
+        log.info("Shutting down. Agent data preserved in %s - "
                   "restart with `python3 main.py` (no --reset) to keep training from here.",
                   CONFIG.db_path)
         print("exit")
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 if __name__ == "__main__":
