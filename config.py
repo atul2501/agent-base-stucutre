@@ -49,6 +49,11 @@ class Config:
     population_cap: int = int(os.getenv("POPULATION_CAP", "500"))
     active_trader_count: int = int(os.getenv("ACTIVE_TRADER_COUNT", "50"))
     min_population_floor: int = int(os.getenv("MIN_POPULATION_FLOOR", "50"))
+    # Of active_trader_count slots, this many are reserved for the newest
+    # untested (0-trade) agents regardless of fitness, so a brand-new agent
+    # is guaranteed at least one real trade instead of potentially never
+    # being picked once older/positive-fitness agents occupy every slot.
+    guaranteed_newcomer_slots: int = int(os.getenv("GUARANTEED_NEWCOMER_SLOTS", "5"))
     # New agents are pre-screened against real historical data before they
     # enter the live do-or-die population (see backtest/engine.py) - this
     # doesn't change live trading at all, it just means an agent is BORN

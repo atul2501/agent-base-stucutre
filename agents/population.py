@@ -169,6 +169,25 @@ class Population:
 
         ranked = sorted(alive, key=lambda a: a.fitness, reverse=True)
         top_traders = ranked[: self.config.active_trader_count]
+
+        # Guarantee a few slots for the newest untested agents. Without
+        # this, once alive count exceeds active_trader_count, a brand-new
+        # agent (fitness=0) ties with every other never-traded agent and
+        # ranks behind anyone who's ever completed even a marginal trade -
+        # it could go permanently benched, never getting a shot to prove
+        # itself, purely because older agents haven't died yet.
+        if len(top_traders) < len(ranked) and self.config.guaranteed_newcomer_slots > 0:
+            top_ids = {a.id for a in top_traders}
+            newcomers = sorted(
+                (a for a in ranked if a.trades_count == 0 and a.id not in top_ids),
+                key=lambda a: a.created_at, reverse=True,
+            )[: self.config.guaranteed_newcomer_slots]
+            if newcomers:
+                keep = sorted(top_traders, key=lambda a: a.fitness, reverse=True)[
+                    : len(top_traders) - len(newcomers)
+                ]
+                top_traders = keep + newcomers
+
         self.db.set_active_traders({a.id for a in top_traders})
 
         # Live capital only ever goes to the most proven subset of the
