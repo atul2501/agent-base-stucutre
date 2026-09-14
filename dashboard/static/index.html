@@ -91,11 +91,11 @@
   </section>
 
   <section>
-    <h2>Leaderboard (top 30 by fitness)</h2>
+    <h2>Leaderboard - top 50 by fitness (of up to <span id="lb-cap">500</span> alive)</h2>
     <div class="panel table-scroll">
       <table id="leaderboard-table">
         <thead><tr>
-          <th>ID</th><th>Tier</th><th>Gen</th><th>Flags</th><th>Wins</th><th>Losses</th>
+          <th>ID</th><th>Tier</th><th>Gen</th><th>Flags</th><th>Strategy</th><th>Wins</th><th>Losses</th>
           <th>Streak</th><th>Trades</th><th>Balance</th><th>Total PnL</th>
         </tr></thead>
         <tbody></tbody>
@@ -147,6 +147,17 @@ function ollamaBadge(status) {
   return `<span class="badge"><span class="dot ${color}"></span>${label}</span>`;
 }
 
+function strategySummary(genomeJson) {
+  try {
+    const g = JSON.parse(genomeJson);
+    return `${g.coin} EMA ${g.ema_fast}/${g.ema_slow} &middot; RSI${g.rsi_period} `
+         + `(${g.rsi_oversold}/${g.rsi_overbought}) &middot; SL ${g.stop_loss_pct}% / TP ${g.take_profit_pct}% `
+         + `&middot; size ${g.position_size_pct}% &middot; hold ${g.max_hold_hours}h`;
+  } catch (e) {
+    return '-';
+  }
+}
+
 async function refresh() {
   try {
     const [overview, population, leaderboard, trades, pnlHistory] = await Promise.all([
@@ -158,6 +169,7 @@ async function refresh() {
     ]);
 
     document.getElementById('title').innerHTML = `Agent Swarm <span>${overview.token} &middot; ${overview.timeframe}</span>`;
+    document.getElementById('lb-cap').textContent = overview.population_cap;
 
     const badges = [];
     badges.push(`<span class="badge ${overview.network}">${overview.network.toUpperCase()}</span>`);
@@ -169,6 +181,7 @@ async function refresh() {
     const totalPnl = population.total_realized_pnl || 0;
     const cards = [
       ["Alive Agents", population.alive_count || 0, `of ${overview.population_cap} cap`],
+      ["Dead Agents", population.dead_count || 0, "lost a trade - do or die"],
       ["Active Traders", population.active_trader_count || 0, `of top ${overview.active_trader_count}`],
       ["Live Traders", population.live_trader_count || 0, overview.is_live ? `of top ${overview.live_active_trader_count}` : 'not armed'],
       ["Professional Tier", population.professional_count || 0, "proven lineages"],
@@ -212,10 +225,11 @@ async function refresh() {
         <td class="${a.tier === 'professional' ? 'tier-pro' : 'tier-std'}">${a.tier}</td>
         <td>${a.generation}</td>
         <td>${a.is_active_trader ? '<span class="flag on">TRADER</span>' : ''} ${a.is_live_trader ? '<span class="flag on">LIVE</span>' : ''}</td>
+        <td title="${a.genome_json}" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;">${strategySummary(a.genome_json)}</td>
         <td>${a.wins}</td><td>${a.losses}</td><td>${a.win_streak}</td><td>${a.trades_count}</td>
         <td>$${fmt(a.balance)}</td>
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
-      </tr>`).join('') : '<tr><td colspan="10" class="empty">No agents yet</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="11" class="empty">No agents yet</td></tr>';
 
     // trades
     const trBody = document.querySelector('#trades-table tbody');

@@ -27,6 +27,8 @@ import logging
 import sys
 import threading
 import time
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 faulthandler.enable()  # print a native stack trace instead of a silent segfault
 
@@ -38,10 +40,22 @@ from engine.orchestrator import Orchestrator
 from reasoning import ollama_advisor
 from trading.live_executor import LiveExecutor
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+# Everything (cycles, trades, agent deaths, etc.) goes to the log file.
+# The terminal only shows warnings/errors plus Flask's own startup banner
+# ("Serving Flask app" / "Debug mode" / "Running on") - that one prints
+# directly to stdout regardless of this config, so it always shows.
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+_file_handler = RotatingFileHandler(LOG_DIR / "agent_swarm.log", maxBytes=5_000_000, backupCount=3)
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.WARNING)
+_console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 log = logging.getLogger("main")
 
 
@@ -133,7 +147,12 @@ def main() -> None:
                 log.exception("Cycle %d failed - will retry next interval", orchestrator.cycle)
             time.sleep(CONFIG.cycle_seconds)
     except KeyboardInterrupt:
-        log.info("Shutting down.")
+        # Ctrl+C never deletes anything - agent/trade history stays in
+        # CONFIG.db_path exactly as it is. Only --reset wipes it.
+        log.info("Shutting down (Ctrl+C). Agent data preserved in %s - "
+                  "restart with `python3 main.py` (no --reset) to keep training from here.",
+                  CONFIG.db_path)
+        print("exit")
     finally:
         db.close()
 

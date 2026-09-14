@@ -61,7 +61,7 @@ class Config:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
 
     # --- storage ---
-    db_path: str = os.getenv("DB_PATH", "trading_agents.db")
+    db_path: str = os.getenv("DB_PATH", "db/trading_agents.db")
 
     # --- dashboard ---
     dashboard_host: str = os.getenv("DASHBOARD_HOST", "127.0.0.1")

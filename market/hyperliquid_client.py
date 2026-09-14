@@ -17,8 +17,12 @@ class MarketSnapshot:
     coin: str
     mid_price: float
     mark_price: float
+    oracle_price: float
+    premium: float                # (mark - oracle) / oracle, from Hyperliquid directly
     funding: float
     open_interest: float
+    prev_day_price: float
+    day_notional_volume: float
     candles: list[dict]          # oldest -> newest, keys: t,o,h,l,c,v
     bid_levels: list[dict]       # [{px, sz}, ...] best first
     ask_levels: list[dict]
@@ -61,8 +65,12 @@ class HyperliquidClient:
             coin=coin,
             mid_price=float(ctx["midPx"]) if ctx.get("midPx") else float(ctx["markPx"]),
             mark_price=float(ctx["markPx"]),
+            oracle_price=float(ctx["oraclePx"]),
+            premium=float(ctx["premium"]) if ctx.get("premium") is not None else 0.0,
             funding=float(ctx["funding"]),
             open_interest=float(ctx["openInterest"]),
+            prev_day_price=float(ctx["prevDayPx"]),
+            day_notional_volume=float(ctx["dayNtlVlm"]),
             candles=candles,
             bid_levels=bid_levels,
             ask_levels=ask_levels,

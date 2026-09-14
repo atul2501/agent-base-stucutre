@@ -1,9 +1,12 @@
 """Local read-only dashboard: population health, profitability, leaderboard,
 recent trades, and live/paper + mainnet/testnet + Ollama status at a glance.
 
-Runs in a background thread inside main.py; talks to its own SQLite
-connection (the main Database enables WAL mode so this can read safely
-while the orchestrator thread keeps writing).
+Runs in a background thread inside main.py. Opens a fresh SQLite connection
+per request (closed at teardown) rather than sharing one long-lived
+connection with the orchestrator's writer thread - a long-lived connection
+shared across threads against a WAL-mode database is a known source of
+native crashes on macOS, and per-request connections are cheap enough for a
+dashboard polled every few seconds.
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, g, jsonify, send_from_directory
 
 from config import Config
 from reasoning import ollama_advisor
@@ -27,9 +30,19 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def create_app(config: Config) -> Flask:
     app = Flask(__name__, static_folder=None)
-    conn = sqlite3.connect(config.db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA query_only = ON")
+
+    def get_conn() -> sqlite3.Connection:
+        if "db" not in g:
+            g.db = sqlite3.connect(config.db_path)
+            g.db.row_factory = sqlite3.Row
+            g.db.execute("PRAGMA query_only = ON")
+        return g.db
+
+    @app.teardown_appcontext
+    def close_conn(exception=None):
+        db = g.pop("db", None)
+        if db is not None:
+            db.close()
 
     @app.get("/")
     def index():
@@ -37,6 +50,7 @@ def create_app(config: Config) -> Flask:
 
     @app.get("/api/overview")
     def overview():
+        conn = get_conn()
         last_cycle = conn.execute(
             "SELECT cycle, ran_at FROM population_cycles ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -59,6 +73,7 @@ def create_app(config: Config) -> Flask:
 
     @app.get("/api/population")
     def population():
+        conn = get_conn()
         row = conn.execute(
             """SELECT
                  SUM(CASE WHEN status='alive' THEN 1 ELSE 0 END) AS alive_count,
@@ -87,18 +102,22 @@ def create_app(config: Config) -> Flask:
 
     @app.get("/api/leaderboard")
     def leaderboard():
+        conn = get_conn()
+        # Top 50 by fitness out of up to population_cap (500) alive agents -
+        # matches ACTIVE_TRADER_COUNT, the set actually allowed to trade.
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
                       balance, wins, losses, win_streak, total_pnl, trades_count, genome_json
                FROM agents WHERE status='alive'
                ORDER BY (total_pnl + CASE WHEN (wins+losses)>0
-                         THEN CAST(wins AS REAL)/(wins+losses) ELSE 0 END) DESC
-               LIMIT 30"""
+                         THEN CAST(wins AS REAL) / (wins+losses) ELSE 0 END) DESC
+               LIMIT 50"""
         ).fetchall()
         return jsonify([_row_to_dict(r) for r in rows])
 
     @app.get("/api/trades")
     def trades():
+        conn = get_conn()
         rows = conn.execute(
             "SELECT * FROM trades ORDER BY id DESC LIMIT 50"
         ).fetchall()
@@ -106,6 +125,7 @@ def create_app(config: Config) -> Flask:
 
     @app.get("/api/pnl_history")
     def pnl_history():
+        conn = get_conn()
         rows = conn.execute(
             "SELECT cycle, alive_count, active_trader_count, professional_count, best_total_pnl, ran_at "
             "FROM population_cycles ORDER BY id DESC LIMIT 200"
@@ -114,6 +134,7 @@ def create_app(config: Config) -> Flask:
 
     @app.get("/api/live")
     def live():
+        conn = get_conn()
         pos = conn.execute("SELECT * FROM live_position WHERE id = 1").fetchone()
         orders = conn.execute("SELECT * FROM live_orders ORDER BY id DESC LIMIT 30").fetchall()
         return jsonify({
@@ -127,4 +148,4 @@ def create_app(config: Config) -> Flask:
 def run_dashboard(config: Config) -> None:
     app = create_app(config)
     log.info("Dashboard listening on http://%s:%d", config.dashboard_host, config.dashboard_port)
-    app.run(host=config.dashboard_host, port=config.dashboard_port, debug=False, use_reloader=False)
+    app.run(host=config.dashboard_host, port=config.dashboard_port, debug=False, use_reloader=False, threaded=True)
