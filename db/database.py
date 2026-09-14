@@ -46,9 +46,16 @@ class AgentRow:
     @property
     def fitness(self) -> float:
         # Ranking score used for population-cap culling and top-N trader
-        # selection: realized pnl first, win rate as a tie-break so brand
-        # new 0-trade agents (fitness 0) aren't favored over proven losers.
-        return self.total_pnl + self.win_rate
+        # selection. Normalized as % return on starting balance (not raw
+        # PnL dollars) so agents are compared on risk-adjusted performance
+        # rather than whoever happened to size a bigger position - a $5
+        # profit on a $50 starting balance ranks above a $5 profit on a
+        # $5000 one. `balance - total_pnl` recovers the starting balance
+        # without needing to store it separately (balance is only ever
+        # mutated by +=pnl in record_win/record_loss_and_kill).
+        starting_balance = self.balance - self.total_pnl
+        pct_return = (self.total_pnl / starting_balance * 100.0) if starting_balance > 0 else 0.0
+        return pct_return + self.win_rate * 10.0
 
 
 class Database:

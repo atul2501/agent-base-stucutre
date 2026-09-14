@@ -24,6 +24,11 @@ class Config:
     token: str = os.getenv("TOKEN", "SOL")
     timeframe: str = os.getenv("TIMEFRAME", "1h")
     cycle_seconds: int = int(os.getenv("CYCLE_SECONDS", "900"))
+    # A slower timeframe checked alongside the primary one - trading with
+    # the bigger trend instead of against short-term noise. Live-only (see
+    # strategy/signals.py) - not genome-tunable, deliberately a fixed macro
+    # context rather than another per-agent parameter to hyper-tune.
+    higher_timeframe: str = os.getenv("HIGHER_TIMEFRAME", "1h")
 
     # --- trading mode: the one switch that matters ---
     # TRADING_MODE=paper (default) - always simulated, never touches the real
@@ -69,6 +74,15 @@ class Config:
     # culuable too, but only when the population actually needs the room.
     max_idle_hours_before_cull: int = int(os.getenv("MAX_IDLE_HOURS_BEFORE_CULL", "6"))
     children_per_win: int = int(os.getenv("CHILDREN_PER_WIN", "2"))
+    # Chance a child comes from crossing two independently-successful
+    # agents instead of pure self-mutation - lets a win also draw on a
+    # second proven lineage's traits, not just perturb its own genome.
+    crossover_probability: float = float(os.getenv("CROSSOVER_PROBABILITY", "0.3"))
+    # Guarantees at least one agent from each coarse strategy "family"
+    # (see agents/population.py::_family) stays among the active traders,
+    # so one early lineage can't crowd out a genuinely different approach
+    # before it's had a chance to prove out.
+    diversity_floor_enabled: bool = _bool("DIVERSITY_FLOOR_ENABLED", True)
     win_streak_share_threshold: int = int(os.getenv("WIN_STREAK_SHARE_THRESHOLD", "8"))
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))
     starting_paper_balance: float = float(os.getenv("STARTING_PAPER_BALANCE", "1000"))

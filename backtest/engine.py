@@ -19,6 +19,10 @@ confirmations are neutral during backtesting (ob_imbalance=1.0,
 oi_change_pct=None - evaluate_entry already treats both as "no signal").
 Funding AND mark/oracle premium DO have real historical series
 (Info.funding_history includes both), so those use real historical data.
+The higher-timeframe trend filter is also neutral here (htf_trend_up=None)
+- it's live-only for now; backtesting it properly would need a second
+historical candle series time-aligned per bar without introducing
+lookahead bias, which wasn't worth rushing.
 """
 from __future__ import annotations
 
@@ -127,6 +131,10 @@ def build_backtest_features(genome: Genome, series: _Series, i: int, ts_ms: int)
         volume_ratio=volume_ratio, vwap_deviation_pct=vwap_deviation_pct,
         macd_hist=float(series.macd[i]), daily_change_pct=daily_change_pct,
         bb_percent_b=float(series.bb[i]), stoch_rsi_k=float(series.stoch[i]),
+        # Higher-timeframe trend isn't backtested (would need a second
+        # historical series properly time-aligned per bar without
+        # lookahead bias) - neutral here, same treatment as order book/OI.
+        htf_trend_up=None,
     )
 
 

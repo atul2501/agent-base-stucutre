@@ -183,3 +183,21 @@ class Genome:
             child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
 
         return child
+
+    def crossover(self, other: "Genome", rng: random.Random) -> "Genome":
+        """Combine roughly half of each parent's genes - used alongside
+        (not instead of) mutation so a win can also draw on a second
+        independently-successful lineage's traits, not just perturb its
+        own genome. E.g. one parent's well-tuned volatility filter can end
+        up paired with another parent's well-tuned VWAP logic."""
+        child = copy.deepcopy(self)
+        for field_name in BOUNDS.keys():
+            if rng.random() < 0.5:
+                setattr(child, field_name, getattr(other, field_name))
+
+        if child.ema_slow <= child.ema_fast:
+            child.ema_slow = child.ema_fast + 5
+        if child.max_atr_pct <= child.min_atr_pct:
+            child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
+
+        return child

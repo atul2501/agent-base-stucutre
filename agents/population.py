@@ -42,6 +42,14 @@ def _idle_hours(agent: AgentRow) -> float:
     return (datetime.now(timezone.utc) - created).total_seconds() / 3600.0
 
 
+def _family(genome: Genome) -> str:
+    """Coarse strategy-family split for the diversity floor - a simple
+    heuristic on how deep a pullback this agent waits for, not a rigorous
+    clustering. Good enough to stop one lineage's style from monopolizing
+    every active-trader slot before a genuinely different style gets a shot."""
+    return "deep-value" if genome.rsi_oversold <= 25 else "momentum-moderate"
+
+
 class Population:
     def __init__(self, db: Database, config: Config, rng: random.Random | None = None,
                  backtest_candles: list[dict] | None = None,
@@ -101,6 +109,16 @@ class Population:
 
     # ---- trade outcome -> lifecycle ----
 
+    def _pick_breeding_partner(self, exclude_id: int) -> Genome | None:
+        """A second parent for crossover - sampled from the current
+        top-fitness agents, excluding the one that just won."""
+        alive = [a for a in self.db.list_alive_agents() if a.id != exclude_id]
+        if not alive:
+            return None
+        top = sorted(alive, key=lambda a: a.fitness, reverse=True)[:10]
+        partner = self.rng.choice(top)
+        return Genome.from_dict(partner.genome)
+
     def handle_win(self, agent_id: int, pnl: float) -> None:
         self.db.record_win(agent_id, pnl)
         agent = self.db.get_agent(agent_id)
@@ -109,7 +127,16 @@ class Population:
 
         parent_genome = Genome.from_dict(agent.genome)
         for _ in range(self.config.children_per_win):
-            candidates = [parent_genome.mutate(self.rng) for _ in range(self.config.backtest_candidates)]
+            candidates = []
+            for _ in range(self.config.backtest_candidates):
+                partner_genome = (
+                    self._pick_breeding_partner(agent.id)
+                    if self.rng.random() < self.config.crossover_probability else None
+                )
+                if partner_genome is not None:
+                    candidates.append(parent_genome.crossover(partner_genome, self.rng).mutate(self.rng, mutation_rate=0.15))
+                else:
+                    candidates.append(parent_genome.mutate(self.rng))
             child_genome = self._pick_best(candidates)
             self.db.create_agent(
                 child_genome.to_dict(),
@@ -187,6 +214,26 @@ class Population:
                     : len(top_traders) - len(newcomers)
                 ]
                 top_traders = keep + newcomers
+
+        # Diversity floor: make sure at least one agent from each coarse
+        # strategy family is active, if any exist at all in the alive
+        # population - evicting the current weakest active trader to make
+        # room. Without this, one early lucky lineage could occupy every
+        # slot and a genuinely different approach might never get tried.
+        if self.config.diversity_floor_enabled and len(top_traders) < len(ranked):
+            top_ids = {a.id for a in top_traders}
+            present_families = {_family(Genome.from_dict(a.genome)) for a in top_traders}
+            all_families = {_family(Genome.from_dict(a.genome)) for a in ranked}
+            for fam in all_families - present_families:
+                candidate = next(
+                    (a for a in ranked if a.id not in top_ids and _family(Genome.from_dict(a.genome)) == fam),
+                    None,
+                )
+                if candidate is None:
+                    continue
+                lowest = min(top_traders, key=lambda a: a.fitness)
+                top_traders = [a for a in top_traders if a.id != lowest.id] + [candidate]
+                top_ids = {a.id for a in top_traders}
 
         self.db.set_active_traders({a.id for a in top_traders})
 

@@ -121,9 +121,52 @@ book depth or open interest (point-in-time snapshots only), so those two
 confirmations are neutral during backtesting. Funding and mark/oracle
 premium DO have real historical series (`Info.funding_history` includes
 both) and are used for real. Hyperliquid also caps a single candle request
-at ~5000 bars (~17 days of 5m data) - `BACKTEST_LOOKBACK_HOURS` defaults to
-360 (15 days) to stay safely under that. Disable entirely with
-`BACKTEST_ENABLED=false` if you'd rather agents stay purely random/mutated.
+at ~5000 bars - `BACKTEST_LOOKBACK_HOURS` should stay safely under whatever
+that means at your `TIMEFRAME` (e.g. ~17 days at 5m, ~3.5 days at 1m).
+Disable entirely with `BACKTEST_ENABLED=false` if you'd rather agents stay
+purely random/mutated.
+
+## Position sizing, fitness, and population diversity
+
+- **Confidence-weighted sizing**: a trade's notional is scaled by how
+  strongly the signal was confirmed (`signal.confidence`, floored at 30%
+  of the genome's intended size) instead of every approved setup risking
+  the same fixed %, regardless of how marginal or strong it was.
+- **Risk-adjusted fitness**: ranking (`AgentRow.fitness` in `db/database.py`)
+  is % return on starting balance, not raw PnL dollars - a $5 profit on a
+  $50 balance ranks above a $5 profit on a $5000 one.
+- **Guaranteed newcomer slots** (`GUARANTEED_NEWCOMER_SLOTS`, default 5):
+  once the population exceeds `ACTIVE_TRADER_COUNT`, a brand-new agent
+  (fitness 0) would otherwise tie with every other never-traded agent and
+  rank behind anyone who's ever won even a marginal trade - potentially
+  never getting a shot. This many active-trader slots are reserved for the
+  newest untested agents regardless of fitness, so every newcomer gets at
+  least one real trade attempt.
+- **Diversity floor** (`DIVERSITY_FLOOR_ENABLED`, default on): reserves a
+  slot for at least one agent from each coarse strategy "family" (a simple
+  split on how deep a pullback an agent waits for - see
+  `agents/population.py::_family`) so one early lucky lineage can't
+  monopolize every active-trader slot before a genuinely different
+  approach gets tried.
+- **Crossover breeding** (`CROSSOVER_PROBABILITY`, default 0.3): a
+  winner's children aren't only self-mutated - 30% of the time a child
+  instead combines roughly half its genes from the winner and half from
+  another current top-fitness agent (`Genome.crossover`), then mutates on
+  top. Lets a win draw on a second independently-successful lineage's
+  traits (e.g. one agent's well-tuned volatility filter paired with
+  another's well-tuned VWAP logic) rather than only ever perturbing one
+  parent's own genome.
+
+## Higher-timeframe trend filter
+
+Every decision also checks a slower timeframe's trend (`HIGHER_TIMEFRAME`,
+default `1h`, fixed EMA(20,50) - not genome-tunable, a shared macro context
+rather than a per-agent knob) - trading with the bigger trend agrees for
++1, trading against it costs -2 (a stronger red flag than most single
+confirmations). This is live-only: backtesting it properly would need a
+second historical candle series time-aligned per bar without introducing
+lookahead bias, which wasn't worth rushing - `htf_trend_up=None` during
+backtesting is treated as neutral, same as order book/open interest.
 
 ### Ollama runs in the cloud by default - no local model needed
 

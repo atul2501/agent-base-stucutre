@@ -15,7 +15,7 @@ from market.hyperliquid_client import HyperliquidClient, MarketSnapshot
 from agents.population import Population
 from reasoning import ollama_advisor
 from strategy.genome import Genome
-from strategy.signals import build_features, evaluate_entry, evaluate_exit
+from strategy.signals import build_features, compute_htf_trend, evaluate_entry, evaluate_exit
 from trading.live_executor import LiveExecutor
 from trading.paper_executor import close_paper_position, open_paper_position
 
@@ -31,6 +31,7 @@ class Orchestrator:
         self.config = config
         self.live = live
         self.prev_open_interest: float | None = None
+        self.htf_trend_up: bool | None = None
         self.cycle = 0
 
     def _fetch_snapshot(self) -> MarketSnapshot | None:
@@ -40,6 +41,15 @@ class Orchestrator:
             log.warning("Failed to fetch market data for %s: %s", self.config.token, e)
             return None
 
+    def _fetch_htf_trend(self) -> bool | None:
+        try:
+            htf_snap = self.hl.get_snapshot(self.config.token, self.config.higher_timeframe)
+            return compute_htf_trend(htf_snap.candles)
+        except Exception as e:
+            log.warning("Failed to fetch higher-timeframe (%s) data: %s - treating as neutral this cycle",
+                        self.config.higher_timeframe, e)
+            return None
+
     def _process_exits(self, snap: MarketSnapshot) -> None:
         for agent in self.db.list_alive_agents():
             trade_row = self.db.get_open_trade(agent.id)
@@ -47,7 +57,7 @@ class Orchestrator:
                 continue
             genome = Genome.from_dict(agent.genome)
 
-            features = build_features(snap, genome, self.prev_open_interest)
+            features = build_features(snap, genome, self.prev_open_interest, self.htf_trend_up)
             outcome = evaluate_exit(genome, trade_row, features)
             if outcome is None:
                 continue
@@ -69,7 +79,7 @@ class Orchestrator:
                 continue
             genome = Genome.from_dict(agent.genome)
 
-            features = build_features(snap, genome, self.prev_open_interest)
+            features = build_features(snap, genome, self.prev_open_interest, self.htf_trend_up)
             signal = evaluate_entry(genome, features)
 
             if signal.ambiguous and self.config.ollama_enabled:
@@ -78,8 +88,14 @@ class Orchestrator:
             if signal.action == "hold":
                 continue
 
+            # Scale position size by how strongly the signal was confirmed -
+            # a barely-passing setup risks less than a strongly-confirmed
+            # one, instead of both risking the same genome-fixed %. Floored
+            # at 30% of the genome's intended size so a weak-but-approved
+            # signal isn't shrunk to near nothing.
+            effective_size_pct = genome.position_size_pct * max(0.3, min(1.0, signal.confidence))
             fill_price, size, notional = open_paper_position(
-                agent.balance, features.mid_price, signal.action, genome.position_size_pct
+                agent.balance, features.mid_price, signal.action, effective_size_pct
             )
             if signal.action == "long":
                 stop_loss = fill_price * (1 - genome.stop_loss_pct / 100)
@@ -150,6 +166,7 @@ class Orchestrator:
             log.warning("No market data available this cycle - skipping")
             return
 
+        self.htf_trend_up = self._fetch_htf_trend()
         self._process_exits(snap)
         self.population.refill_if_below_floor()
         stats = self.population.rank_and_enforce()

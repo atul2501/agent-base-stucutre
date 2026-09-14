@@ -6,9 +6,16 @@ Two hard pre-filters gate everything: spread (liquidity) and ATR regime
 other signal Hyperliquid's data supports - order book imbalance, open
 interest change, funding-rate crowding, mark/oracle premium, volume
 conviction, VWAP deviation, MACD momentum, Bollinger %B, Stochastic RSI,
-and 24h macro momentum. A clear score fires a trade or a clear HOLD; a
-genuinely mixed read is flagged `ambiguous` so the orchestrator can consult
-the Ollama advisor instead of guessing.
+24h macro momentum, and a higher-timeframe trend check (trading with the
+bigger trend, not against short-term noise). A clear score fires a trade
+or a clear HOLD; a genuinely mixed read is flagged `ambiguous` so the
+orchestrator can consult the Ollama advisor instead of guessing.
+
+The higher-timeframe trend is live-only: `htf_trend_up=None` means
+"unknown" (used during backtesting, which doesn't fetch a second
+historical series for this in the current implementation - see
+backtest/engine.py) and is treated as neutral, contributing neither a
+confirmation nor a contradiction.
 """
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ class Features:
     daily_change_pct: float
     bb_percent_b: float           # 0 = at lower Bollinger band, 1 = at upper
     stoch_rsi_k: float            # 0-100, Stochastic RSI %K
+    htf_trend_up: bool | None = None  # higher-timeframe EMA trend; None = unknown/neutral
 
 
 @dataclass
@@ -58,11 +66,28 @@ def _neutral_features(snap: MarketSnapshot) -> Features:
         trend_up=True, rsi_value=50.0, ob_imbalance=1.0, spread_pct=0.0, oi_change_pct=None,
         funding=snap.funding, premium=snap.premium, atr_pct=0.0, volume_ratio=1.0,
         vwap_deviation_pct=0.0, macd_hist=0.0, daily_change_pct=0.0,
-        bb_percent_b=0.5, stoch_rsi_k=50.0,
+        bb_percent_b=0.5, stoch_rsi_k=50.0, htf_trend_up=None,
     )
 
 
-def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: float | None) -> Features:
+_HTF_EMA_FAST = 20
+_HTF_EMA_SLOW = 50
+
+
+def compute_htf_trend(htf_candles: list[dict]) -> bool | None:
+    """Trend read from a slower timeframe's candles, fixed EMA periods
+    (not genome-tunable - a shared macro context, not a per-agent knob).
+    Returns None if there isn't enough history yet."""
+    closes = [c["c"] for c in htf_candles]
+    if len(closes) < _HTF_EMA_SLOW + 2:
+        return None
+    fast = ema(closes, _HTF_EMA_FAST)
+    slow = ema(closes, _HTF_EMA_SLOW)
+    return bool(fast[-1] > slow[-1])
+
+
+def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: float | None,
+                    htf_trend_up: bool | None = None) -> Features:
     closes = [c["c"] for c in snap.candles]
     highs = [c["h"] for c in snap.candles]
     lows = [c["l"] for c in snap.candles]
@@ -127,6 +152,7 @@ def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: flo
         daily_change_pct=daily_change_pct,
         bb_percent_b=float(bb_series[-1]),
         stoch_rsi_k=float(stoch_series[-1]),
+        htf_trend_up=htf_trend_up,
     )
 
 
@@ -220,6 +246,18 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
         score -= 1
         reasons.append(f"24h change {f.daily_change_pct:.2f}% fights the daily trend")
 
+    # Higher-timeframe trend: trading against the bigger trend is a
+    # stronger red flag than most single confirmations, so disagreement
+    # costs 2 instead of the usual 1. None (unknown/backtest) is neutral.
+    if f.htf_trend_up is not None:
+        htf_agrees = f.htf_trend_up if candidate == "long" else not f.htf_trend_up
+        if htf_agrees:
+            score += 1
+            reasons.append(f"higher-timeframe trend agrees with {candidate}")
+        else:
+            score -= 2
+            reasons.append(f"higher-timeframe trend fights {candidate} - trading against the bigger trend")
+
     # Bollinger %B: near the band on your side of the trade confirms (bands
     # aren't symmetric around zero like the signals above, so this is
     # written explicitly per direction rather than via the sign trick).
@@ -254,15 +292,16 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
             score -= 1
             reasons.append(f"StochRSI oversold ({f.stoch_rsi_k:.1f}) - contradicts")
 
-    # Up to 10 confirmation dimensions now (order book, OI, funding, premium,
-    # volume, VWAP, MACD, daily momentum, Bollinger, StochRSI) on top of the
-    # base trigger, so the score range is wider than a simple +-1 vote.
+    # Up to 11 confirmation dimensions now (order book, OI, funding, premium,
+    # volume, VWAP, MACD, daily momentum, Bollinger, StochRSI, higher-
+    # timeframe trend) on top of the base trigger, so the score range is
+    # wider than a simple +-1 vote.
     if score < 0:
         return Signal("hold", 0.0, score, reasons + ["net contradicted, skipping"], ambiguous=False)
     if score <= 2:
         return Signal(candidate, 0.4, score, reasons, ambiguous=True)
 
-    confidence = min(1.0, score / 8)
+    confidence = min(1.0, score / 9)
     return Signal(candidate, confidence, score, reasons, ambiguous=False)
 
 
