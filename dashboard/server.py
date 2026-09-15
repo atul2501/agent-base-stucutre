@@ -116,9 +116,15 @@ def create_app(config: Config) -> Flask:
         # Top 50 by fitness out of up to population_cap (500) alive agents -
         # matches ACTIVE_TRADER_COUNT, the set actually allowed to trade.
         # Mirrors AgentRow.fitness in db/database.py exactly (% return on
-        # starting balance + win_rate*10, not raw PnL dollars) so the
+        # starting balance + log1p(wins)*10, not raw PnL dollars) so the
         # dashboard's ranking matches what actually decides active-trader
         # selection - these had drifted apart before.
+        #
+        # win_rate isn't used: under do-or-die a single loss kills the
+        # agent, so every alive agent has losses == 0 and win_rate is
+        # always exactly 0.0 or 1.0, unable to distinguish a 1-win agent
+        # from a 20-win one. LN(wins+1) grows with a proven track record
+        # but with diminishing returns rather than a flat +10 for any win.
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
                       balance, wins, losses, win_streak, total_pnl, trades_count, genome_json,
@@ -127,8 +133,7 @@ def create_app(config: Config) -> Flask:
                ORDER BY (
                  CASE WHEN (balance - total_pnl) > 0
                       THEN total_pnl / (balance - total_pnl) * 100.0 ELSE 0 END
-                 + CASE WHEN (wins+losses) > 0
-                        THEN CAST(wins AS REAL) / (wins+losses) * 10.0 ELSE 0 END
+                 + LN(wins + 1) * 10.0
                ) DESC
                LIMIT 50"""
         ).fetchall()

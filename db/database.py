@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -55,9 +56,16 @@ class AgentRow:
         # $5000 one. `balance - total_pnl` recovers the starting balance
         # without needing to store it separately (balance is only ever
         # mutated by +=pnl in record_win/record_loss_and_kill).
+        #
+        # win_rate is not used here: under the do-or-die rule a single loss
+        # kills the agent, so every alive agent has losses == 0 and win_rate
+        # is always exactly 0.0 or 1.0 - it can't distinguish a 1-win agent
+        # from a 20-win one. `wins` (== win_streak while alive) is used
+        # instead, with log1p so the bonus grows with a proven track record
+        # but with diminishing returns rather than unbounded linear growth.
         starting_balance = self.balance - self.total_pnl
         pct_return = (self.total_pnl / starting_balance * 100.0) if starting_balance > 0 else 0.0
-        return pct_return + self.win_rate * 10.0
+        return pct_return + math.log1p(self.wins) * 10.0
 
 
 class Database:
