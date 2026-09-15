@@ -159,16 +159,34 @@ function strategySummary(genomeJson) {
   }
 }
 
-async function refresh() {
+// Each section renders independently - one section throwing (e.g. a
+// blocked/slow CDN breaking the chart) must never prevent the others from
+// updating. A previous version wrapped everything in one try/catch, so a
+// single failure silently froze the leaderboard/trades tables forever.
+async function section(name, fn) {
   try {
-    const [overview, population, leaderboard, trades, pnlHistory] = await Promise.all([
+    await fn();
+  } catch (e) {
+    console.error(`dashboard section "${name}" failed:`, e);
+  }
+}
+
+async function refresh() {
+  let overview, population, leaderboard, trades, pnlHistory;
+  try {
+    [overview, population, leaderboard, trades, pnlHistory] = await Promise.all([
       fetch('/api/overview').then(r => r.json()),
       fetch('/api/population').then(r => r.json()),
       fetch('/api/leaderboard').then(r => r.json()),
       fetch('/api/trades').then(r => r.json()),
       fetch('/api/pnl_history').then(r => r.json()),
     ]);
+  } catch (e) {
+    console.error('dashboard: failed to fetch API data', e);
+    return;
+  }
 
+  section('header', () => {
     document.getElementById('title').innerHTML = `Agent Swarm <span>${overview.token} &middot; ${overview.timeframe}</span>`;
     document.getElementById('lb-cap').textContent = overview.population_cap;
 
@@ -178,7 +196,9 @@ async function refresh() {
     badges.push(ollamaBadge(overview.ollama));
     badges.push(`<span class="badge">Cycle ${overview.last_cycle ? overview.last_cycle.cycle : 0} &middot; ${overview.last_cycle ? ago(overview.last_cycle.ran_at) : 'not started'}</span>`);
     document.getElementById('badges').innerHTML = badges.join('');
+  });
 
+  section('stat-cards', () => {
     const totalPnl = population.total_realized_pnl || 0;
     const cards = [
       ["Alive Agents", population.alive_count || 0, `of ${overview.population_cap} cap`],
@@ -197,8 +217,10 @@ async function refresh() {
         <div class="value ${typeof value === 'string' && value.startsWith('+') ? 'pos' : (typeof value === 'string' && value.startsWith('-') ? 'neg' : '')}">${value}</div>
         <div class="sub">${sub}</div>
       </div>`).join('');
+  });
 
-    // pnl chart
+  section('pnl-chart', () => {
+    if (typeof Chart === 'undefined') throw new Error('Chart.js failed to load (CDN blocked?) - skipping chart only');
     const labels = pnlHistory.map(r => 'c' + r.cycle);
     const data = pnlHistory.map(r => r.best_total_pnl || 0);
     if (!pnlChart) {
@@ -217,8 +239,9 @@ async function refresh() {
       pnlChart.data.datasets[0].data = data;
       pnlChart.update('none');
     }
+  });
 
-    // leaderboard
+  section('leaderboard', () => {
     const lbBody = document.querySelector('#leaderboard-table tbody');
     lbBody.innerHTML = leaderboard.length ? leaderboard.map(a => `
       <tr>
@@ -231,8 +254,9 @@ async function refresh() {
         <td>$${fmt(a.balance)}</td>
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
       </tr>`).join('') : '<tr><td colspan="11" class="empty">No agents yet</td></tr>';
+  });
 
-    // trades
+  section('trades', () => {
     const trBody = document.querySelector('#trades-table tbody');
     trBody.innerHTML = trades.length ? trades.map(t => `
       <tr>
@@ -245,10 +269,11 @@ async function refresh() {
         <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
         <td>${ago(t.opened_at)}</td>
       </tr>`).join('') : '<tr><td colspan="8" class="empty">No trades yet</td></tr>';
+  });
 
-    // live section
-    if (overview.is_live) {
-      document.getElementById('live-section').style.display = '';
+  if (overview.is_live) {
+    document.getElementById('live-section').style.display = '';
+    await section('live', async () => {
       const live = await fetch('/api/live').then(r => r.json());
       const pos = live.position;
       document.getElementById('live-position').innerHTML = pos && pos.side ? `
@@ -266,11 +291,9 @@ async function refresh() {
           <td class="${o.status==='filled'?'pos':'neg'}">${o.status}</td>
           <td title="${o.detail||''}">${(o.detail||'').slice(0,50)}</td>
         </tr>`).join('') : '<tr><td colspan="6" class="empty">No live orders yet</td></tr>';
-    } else {
-      document.getElementById('live-section').style.display = 'none';
-    }
-  } catch (e) {
-    console.error('dashboard refresh failed', e);
+    });
+  } else {
+    document.getElementById('live-section').style.display = 'none';
   }
 }
 

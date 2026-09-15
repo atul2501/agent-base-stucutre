@@ -105,12 +105,20 @@ def create_app(config: Config) -> Flask:
         conn = get_conn()
         # Top 50 by fitness out of up to population_cap (500) alive agents -
         # matches ACTIVE_TRADER_COUNT, the set actually allowed to trade.
+        # Mirrors AgentRow.fitness in db/database.py exactly (% return on
+        # starting balance + win_rate*10, not raw PnL dollars) so the
+        # dashboard's ranking matches what actually decides active-trader
+        # selection - these had drifted apart before.
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
                       balance, wins, losses, win_streak, total_pnl, trades_count, genome_json
                FROM agents WHERE status='alive'
-               ORDER BY (total_pnl + CASE WHEN (wins+losses)>0
-                         THEN CAST(wins AS REAL) / (wins+losses) ELSE 0 END) DESC
+               ORDER BY (
+                 CASE WHEN (balance - total_pnl) > 0
+                      THEN total_pnl / (balance - total_pnl) * 100.0 ELSE 0 END
+                 + CASE WHEN (wins+losses) > 0
+                        THEN CAST(wins AS REAL) / (wins+losses) * 10.0 ELSE 0 END
+               ) DESC
                LIMIT 50"""
         ).fetchall()
         return jsonify([_row_to_dict(r) for r in rows])
