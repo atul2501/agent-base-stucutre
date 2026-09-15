@@ -61,6 +61,17 @@ class Config:
     live_circuit_breaker_enabled: bool = _bool("LIVE_CIRCUIT_BREAKER_ENABLED", True)
     live_max_drawdown_pct: float = float(os.getenv("LIVE_MAX_DRAWDOWN_PCT", "20.0"))
     live_stale_price_cycles: int = int(os.getenv("LIVE_STALE_PRICE_CYCLES", "5"))
+    # Separate from the peak-drawdown trip above: catches a fast single-day
+    # bleed that hasn't yet pulled 20% off the ALL-TIME peak (e.g. equity
+    # was already down 15% from a prior peak, then loses another 10% today -
+    # peak-drawdown alone wouldn't trip until 20% total). Resets at each new
+    # UTC calendar day.
+    live_max_daily_loss_pct: float = float(os.getenv("LIVE_MAX_DAILY_LOSS_PCT", "10.0"))
+    # Optional webhook (Slack/Discord-compatible {"text": ...} payload, or
+    # any endpoint that accepts JSON) pinged when the breaker trips - the
+    # dashboard banner alone is silent if nobody's looking at it. Empty
+    # disables; failure to reach it is logged, never blocks the trip itself.
+    live_breaker_webhook_url: str = os.getenv("LIVE_BREAKER_WEBHOOK_URL", "")
 
     # --- population / evolution ---
     population_cap: int = int(os.getenv("POPULATION_CAP", "500"))

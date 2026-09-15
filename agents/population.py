@@ -44,6 +44,34 @@ def _idle_hours(agent: AgentRow) -> float:
     return (datetime.now(timezone.utc) - created).total_seconds() / 3600.0
 
 
+def _split_train_validation(
+    candles: list[dict], funding: list[tuple[int, float, float]], train_frac: float = 0.7,
+) -> tuple[list[dict], list[tuple[int, float, float]], list[dict], list[tuple[int, float, float]]]:
+    """Chronological (not random - avoids any lookahead) split of the
+    recent-window backtest data into an earlier 'train' slice and a later
+    'validation' slice. Nothing is actually FIT to the train slice (no
+    genome parameter comes from optimizing against this data - candidates
+    are mutated/crossed-over/random), so the risk here isn't classic
+    overfitting; it's SELECTION bias: among several independently-generated
+    candidates, picking whichever scored best on one full window can just
+    reward a lucky fluke on that specific window. Scoring candidates on a
+    held-out LATER slice they weren't picked to fit approximates a genuine
+    walk-forward check instead. Returns ([], [], [], []) unchanged-shape
+    empty validation lists if there isn't enough data to split meaningfully
+    - callers should fall back to the full window in that case."""
+    n = len(candles)
+    if n < 100:
+        return candles, funding, [], []
+    cut = int(n * train_frac)
+    train_candles, validation_candles = candles[:cut], candles[cut:]
+    if not validation_candles:
+        return candles, funding, [], []
+    split_ms = validation_candles[0]["t"]
+    train_funding = [f for f in funding if f[0] < split_ms]
+    validation_funding = [f for f in funding if f[0] >= split_ms]
+    return train_candles, train_funding, validation_candles, validation_funding
+
+
 def _family(genome: Genome) -> str:
     """Coarse strategy-family split for the diversity floor - a simple
     heuristic on how deep a pullback this agent waits for, not a rigorous
@@ -60,26 +88,46 @@ class Population:
         self.db = db
         self.config = config
         self.rng = rng or random.Random()
-        self.backtest_candles = backtest_candles
-        self.backtest_funding = backtest_funding or []
         # Several separate, non-overlapping older historical windows (see
         # main.py) each covering a different market regime - used alongside
-        # backtest_candles (the recent-window score) so a candidate genome
-        # that only works in whatever regime just happened doesn't win by
-        # default. Empty/omitted falls back to today's single-window-only
-        # behavior (e.g. the extra fetch failed, or in tests).
+        # the recent-window score so a candidate genome that only works in
+        # whatever regime just happened doesn't win by default. Empty/
+        # omitted falls back to today's single-window-only behavior (e.g.
+        # the extra fetch failed, or in tests).
         self.regime_windows = regime_windows or []
+        self.set_backtest_window(backtest_candles, backtest_funding)
+
+    def set_backtest_window(self, candles: list[dict] | None,
+                             funding: list[tuple[int, float, float]] | None) -> None:
+        """Sets the recent-window backtest data AND recomputes the train/
+        validation split used by _pick_best - the single place this should
+        happen, so orchestrator's periodic refresh (see
+        engine/orchestrator.py::_refresh_backtest_window) can't update one
+        without the other going stale."""
+        self.backtest_candles = candles
+        self.backtest_funding = funding or []
+        (self.train_candles, self.train_funding,
+         self.validation_candles, self.validation_funding) = _split_train_validation(
+            self.backtest_candles or [], self.backtest_funding,
+        )
 
     def _pick_best(self, candidates: list[Genome]) -> Genome:
-        """Backtest each candidate genome against real recent history and
-        keep the best-scoring one. Falls back to the first candidate
-        untouched if backtesting is disabled or no historical data was
-        supplied (e.g. in tests) - never blocks agent creation."""
+        """Backtest each candidate genome and keep the best-scoring one.
+        Falls back to the first candidate untouched if backtesting is
+        disabled or no historical data was supplied (e.g. in tests) - never
+        blocks agent creation.
+
+        Scores against the held-out VALIDATION slice (the later ~30% of the
+        recent window) rather than the full window when there's enough data
+        to split - see _split_train_validation for why. Falls back to the
+        full window when there isn't (e.g. a short BACKTEST_LOOKBACK_HOURS)."""
         if not self.config.backtest_enabled or not self.backtest_candles or len(candidates) == 1:
             return candidates[0]
+        score_candles = self.validation_candles or self.backtest_candles
+        score_funding = self.validation_funding if self.validation_candles else self.backtest_funding
         best_genome, best_score = candidates[0], None
         for genome in candidates:
-            result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
+            result = backtest_genome(genome, score_candles, score_funding,
                                       starting_balance=self.config.starting_paper_balance)
             score = fitness_score(result) + self._regime_consistency_score(genome)
             if best_score is None or score > best_score:

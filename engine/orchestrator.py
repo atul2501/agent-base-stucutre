@@ -73,7 +73,8 @@ class Orchestrator:
 
             result, reason = outcome
             exit_price, pnl = close_paper_position(
-                trade_row["entry_price"], features.mid_price, trade_row["size"], trade_row["side"]
+                trade_row["entry_price"], features.mid_price, trade_row["size"], trade_row["side"],
+                spread_pct=features.spread_pct,
             )
             self.db.close_trade(trade_row["id"], exit_price, pnl, result, reason)
 
@@ -110,7 +111,8 @@ class Orchestrator:
             # signal isn't shrunk to near nothing.
             effective_size_pct = genome.position_size_pct * max(0.3, min(1.0, signal.confidence))
             fill_price, size, notional = open_paper_position(
-                agent.balance, features.mid_price, signal.action, effective_size_pct
+                agent.balance, features.mid_price, signal.action, effective_size_pct,
+                spread_pct=features.spread_pct,
             )
             if signal.action == "long":
                 stop_loss = fill_price * (1 - genome.stop_loss_pct / 100)
@@ -130,6 +132,33 @@ class Orchestrator:
 
     def _is_breaker_tripped(self) -> bool:
         return self.db.get_meta("live_breaker_tripped") == "1"
+
+    def _notify_breaker_webhook(self, reason: str) -> None:
+        """Best-effort ping to an external webhook (Slack/Discord-compatible
+        or any JSON endpoint) so a trip isn't silent if nobody's watching
+        the dashboard. Never raises - a failed notification must never be
+        confused with a failed (or worse, un-flattened) trip."""
+        url = self.config.live_breaker_webhook_url
+        if not url:
+            return
+        import json
+        import urllib.request
+        payload = {
+            "text": f":rotating_light: LIVE CIRCUIT BREAKER TRIPPED ({self.config.token}): {reason} "
+                    f"- real position flattened, live trading paused until "
+                    f"`python3 main.py --clear-live-breaker` is run.",
+            "token": self.config.token,
+            "reason": reason,
+            "tripped_at": now_iso(),
+        }
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            log.warning("Circuit breaker webhook notification failed (trip itself still stands): %s", e)
 
     def _trip_circuit_breaker(self, reason: str, snap: MarketSnapshot) -> None:
         """The one safeguard that protects real money rather than just
@@ -156,12 +185,14 @@ class Orchestrator:
             except Exception:
                 log.exception("Circuit breaker flatten order failed - live position may "
                                "still be open, check the exchange directly")
+        self._notify_breaker_webhook(reason)
 
     def _check_circuit_breaker(self, snap: MarketSnapshot) -> bool:
         """Returns True if live trading should stay paused this cycle -
-        either already tripped, or trips right now on drawdown or a frozen
-        price feed. Paper trading and the evolutionary population are never
-        affected by this; only the real aggregate live position is."""
+        either already tripped, or trips right now on drawdown, a fast
+        single-day loss, or a frozen price feed. Paper trading and the
+        evolutionary population are never affected by this; only the real
+        aggregate live position is."""
         if self.live is None or not self.config.live_circuit_breaker_enabled:
             return False
 
@@ -186,19 +217,44 @@ class Orchestrator:
             )
             return True
 
-        # Drawdown from peak account equity since the breaker was last
-        # cleared. A None equity read (transient API failure) is skipped,
-        # not treated as a drawdown - never trip on our own inability to ask.
+        # Both equity-based checks below share one API call. A None read
+        # (transient API failure) skips both - never trip on our own
+        # inability to ask, only on a real, confirmed number.
         equity = self.live.get_account_equity()
-        if equity is not None:
-            peak_raw = self.db.get_meta("live_peak_equity")
-            peak = max(float(peak_raw), equity) if peak_raw else equity
-            self.db.set_meta("live_peak_equity", str(peak))
-            if peak > 0:
-                drawdown_pct = (peak - equity) / peak * 100.0
-                if drawdown_pct >= self.config.live_max_drawdown_pct:
+        if equity is None:
+            return False
+
+        # All-time peak drawdown.
+        peak_raw = self.db.get_meta("live_peak_equity")
+        peak = max(float(peak_raw), equity) if peak_raw else equity
+        self.db.set_meta("live_peak_equity", str(peak))
+        if peak > 0:
+            drawdown_pct = (peak - equity) / peak * 100.0
+            if drawdown_pct >= self.config.live_max_drawdown_pct:
+                self._trip_circuit_breaker(
+                    f"drawdown {drawdown_pct:.1f}% from peak equity ${peak:.2f} (current ${equity:.2f})",
+                    snap,
+                )
+                return True
+
+        # Fast single-day loss - catches a bleed that hasn't yet pulled the
+        # full live_max_drawdown_pct off the ALL-TIME peak (e.g. already
+        # down 15% from a much older peak, then loses another 10% today).
+        # Resets at each new UTC calendar day.
+        today = now_iso()[:10]
+        day_start_date = self.db.get_meta("live_day_start_date")
+        if day_start_date != today:
+            self.db.set_meta("live_day_start_date", today)
+            self.db.set_meta("live_day_start_equity", str(equity))
+        else:
+            day_start_raw = self.db.get_meta("live_day_start_equity")
+            day_start_equity = float(day_start_raw) if day_start_raw else equity
+            if day_start_equity > 0:
+                daily_loss_pct = (day_start_equity - equity) / day_start_equity * 100.0
+                if daily_loss_pct >= self.config.live_max_daily_loss_pct:
                     self._trip_circuit_breaker(
-                        f"drawdown {drawdown_pct:.1f}% from peak equity ${peak:.2f} (current ${equity:.2f})",
+                        f"daily loss {daily_loss_pct:.1f}% (today's start equity ${day_start_equity:.2f}, "
+                        f"current ${equity:.2f})",
                         snap,
                     )
                     return True
@@ -257,14 +313,14 @@ class Orchestrator:
         revalidation) is otherwise only ever fetched once at startup - stale
         after the first few hours of a long-running deployment. Refetches it
         periodically so "backtested against the newest data" stays true.
-        Mutates the Population instance's own attributes in place; failure
-        just keeps the previous (older but still usable) window."""
+        Also recomputes the train/validation split via
+        Population.set_backtest_window - failure just keeps the previous
+        (older but still usable) window and split."""
         try:
             snap = self.hl.get_snapshot(self.config.token, self.config.timeframe,
                                          candle_lookback_hours=self.config.backtest_lookback_hours)
             funding = self.hl.get_funding_history(self.config.token, self.config.backtest_lookback_hours)
-            self.population.backtest_candles = snap.candles
-            self.population.backtest_funding = funding
+            self.population.set_backtest_window(snap.candles, funding)
             log.info("Refreshed recent-window backtest data: %d candles, %d funding points",
                       len(snap.candles), len(funding))
         except Exception:

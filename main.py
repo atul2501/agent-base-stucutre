@@ -77,6 +77,13 @@ def parse_args() -> argparse.Namespace:
              "by design. Exits immediately after clearing; does not start the trading loop.",
     )
     parser.add_argument(
+        "--stress-test", action="store_true",
+        help="Run the exit-logic stress test suite (flash crash, flash spike, extreme "
+             "favorable gap, max-hold timeout, near-zero price - see backtest/stress_test.py) "
+             "against a representative genome and exit. No DB/network needed; doesn't start "
+             "the trading loop.",
+    )
+    parser.add_argument(
         "--snapshot-best", type=int, nargs="?", const=10, default=None, metavar="N",
         help="Save the current top N alive agents' genomes (by fitness, default N=10) to "
              "SNAPSHOT_DIR (default 'snapshots/') as JSON files, then exit. These are "
@@ -122,6 +129,11 @@ def _handle_sigterm(signum, frame) -> None:
 def main() -> None:
     signal.signal(signal.SIGTERM, _handle_sigterm)
     args = parse_args()
+
+    if args.stress_test:
+        from backtest.stress_test import main as run_stress_test
+        sys.exit(run_stress_test())
+
     db: Database | None = None
 
     # The whole body - including startup (historical data fetch, ~20-30s of
