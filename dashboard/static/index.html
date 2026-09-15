@@ -98,6 +98,17 @@
     </div>
   </section>
 
+  <section>
+    <h2>Agents Evaluated Over Time</h2>
+    <div class="panel">
+      <div class="viz-legend" id="pop-legend"></div>
+      <div class="chart-wrap">
+        <svg id="popChart" role="img" aria-label="Population size by cycle"></svg>
+        <div class="viz-tooltip" id="pop-tooltip"></div>
+      </div>
+    </div>
+  </section>
+
   <section id="live-section" style="display:none">
     <h2>Live Position (Real Money)</h2>
     <div class="panel">
@@ -177,12 +188,17 @@ const TRADES_PAGE_SIZE = 15;
 
 // Dependency-free inline SVG line chart - no external CDN (Chart.js used to
 // be loaded from cdnjs; on a server without outbound internet access to that
-// CDN the canvas just stayed permanently blank with no visible error). Two
-// series max, same $ unit, one shared y-axis (never a dual-axis chart).
-const PNL_SERIES_COLORS = ["#4f8cff", "#a875ff"]; // accent, purple - already used elsewhere on this page
-let pnlChartState = null; // {cyclesPx: [{cx, cycle}], series: [{label,color,values}], scaleY(v)}
+// CDN the canvas just stayed permanently blank with no visible error). One
+// shared y-axis (never a dual-axis chart) - unit-agnostic via `formatValue`,
+// so the same renderer works for $ series (PnL) and plain-count series
+// (population growth) alike. State is stashed on the svg element itself
+// (svg.__chartState) rather than one shared global, so multiple independent
+// charts on the same page don't clobber each other.
+const PNL_SERIES_COLORS = ["#4f8cff", "#a875ff", "#26c281"]; // accent, purple, green - already used elsewhere on this page
+const dollarFmt = (v) => (v === null || v === undefined || isNaN(v)) ? '-' : (v >= 0 ? '+' : '') + '$' + fmt(v);
+const countFmt = (v) => (v === null || v === undefined || isNaN(v)) ? '-' : fmt(v, 0);
 
-function renderLineChart(svg, legendEl, cycles, series) {
+function renderLineChart(svg, legendEl, cycles, series, formatValue = dollarFmt) {
   const w = svg.clientWidth || 600, h = svg.clientHeight || 240;
   const padL = 50, padR = 10, padT = 10, padB = 22;
   const plotW = Math.max(1, w - padL - padR), plotH = Math.max(1, h - padT - padB);
@@ -193,7 +209,7 @@ function renderLineChart(svg, legendEl, cycles, series) {
   if (!cycles.length) {
     svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
     svg.innerHTML = `<text x="${w/2}" y="${h/2}" text-anchor="middle" fill="#8b93a7" font-size="13">No cycles yet</text>`;
-    pnlChartState = null;
+    svg.__chartState = null;
     return;
   }
 
@@ -233,31 +249,30 @@ function renderLineChart(svg, legendEl, cycles, series) {
     const d = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
     out += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
   });
-  out += `<line id="pnl-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="#8b93a7" stroke-width="1" style="display:none"/>`;
+  out += `<line class="chart-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="#8b93a7" stroke-width="1" style="display:none"/>`;
 
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
   svg.innerHTML = out;
-  pnlChartState = { padL, padR, plotW, cycles, series, xAt, yAt };
+  svg.__chartState = { padL, padR, plotW, cycles, series, xAt, yAt, formatValue };
 }
 
 function attachChartHover(svg, tooltipEl) {
   const wrap = svg.parentElement;
   svg.addEventListener('mousemove', (e) => {
-    if (!pnlChartState) return;
+    const state = svg.__chartState;
+    if (!state) return;
     const rect = svg.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * (svg.clientWidth / rect.width || 1);
-    const { padL, plotW, cycles, series, xAt, yAt } = pnlChartState;
+    const { padL, plotW, cycles, series, xAt, formatValue } = state;
     const frac = cycles.length > 1 ? Math.max(0, Math.min(1, (mx - padL) / plotW)) : 0;
     const idx = Math.round(frac * (cycles.length - 1));
     const cx = xAt(idx);
-    const crosshair = svg.querySelector('#pnl-crosshair');
+    const crosshair = svg.querySelector('.chart-crosshair');
     if (crosshair) { crosshair.setAttribute('x1', cx); crosshair.setAttribute('x2', cx); crosshair.style.display = ''; }
 
-    const lines = series.map(s => {
-      const v = s.values[idx];
-      return `<span class="swatch" style="background:${s.color}"></span>${s.label}: `
-        + `<b>${v === null || v === undefined || isNaN(v) ? '-' : (v >= 0 ? '+' : '') + '$' + fmt(v)}</b>`;
-    }).join('<br>');
+    const lines = series.map(s =>
+      `<span class="swatch" style="background:${s.color}"></span>${s.label}: <b>${formatValue(s.values[idx])}</b>`
+    ).join('<br>');
     tooltipEl.innerHTML = `c${cycles[idx]}<br>${lines}`;
     tooltipEl.style.display = '';
     tooltipEl.style.left = Math.min(cx + 10, wrap.clientWidth - tooltipEl.offsetWidth - 4) + 'px';
@@ -265,11 +280,12 @@ function attachChartHover(svg, tooltipEl) {
   });
   svg.addEventListener('mouseleave', () => {
     tooltipEl.style.display = 'none';
-    const crosshair = svg.querySelector('#pnl-crosshair');
+    const crosshair = svg.querySelector('.chart-crosshair');
     if (crosshair) crosshair.style.display = 'none';
   });
 }
 attachChartHover(document.getElementById('pnlChart'), document.getElementById('pnl-tooltip'));
+attachChartHover(document.getElementById('popChart'), document.getElementById('pop-tooltip'));
 
 function ollamaBadge(status) {
   const map = {
@@ -477,6 +493,21 @@ async function refresh() {
         values: pnlHistory.map(r => r.best_total_pnl) },
     ];
     renderLineChart(document.getElementById('pnlChart'), document.getElementById('pnl-legend'), cycles, series);
+  });
+
+  section('population-chart', () => {
+    // Answers "how many agents has this actually evaluated over time" -
+    // alive count (population size), active traders (how many are actually
+    // allowed to open positions right now), and professional-tier count
+    // (proven, self-sustaining lineages), all per cycle from the same
+    // population_cycles history the PnL chart above already uses.
+    const cycles = pnlHistory.map(r => r.cycle);
+    const series = [
+      { label: 'Alive agents', color: PNL_SERIES_COLORS[0], values: pnlHistory.map(r => r.alive_count) },
+      { label: 'Active traders', color: PNL_SERIES_COLORS[1], values: pnlHistory.map(r => r.active_trader_count) },
+      { label: 'Professional tier', color: PNL_SERIES_COLORS[2], values: pnlHistory.map(r => r.professional_count) },
+    ];
+    renderLineChart(document.getElementById('popChart'), document.getElementById('pop-legend'), cycles, series, countFmt);
   });
 
   section('regime-stats', () => {
