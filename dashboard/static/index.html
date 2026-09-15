@@ -71,6 +71,15 @@
   .regime-ranging { color: var(--amber); } .regime-unknown { color: var(--muted); }
   .health-ok { color: var(--green); } .health-drifted { color: var(--amber); font-weight: 600; }
   .health-pending { color: var(--muted); }
+
+  .gauge-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; }
+  .gauge-svg-box { width: 260px; flex-shrink: 0; }
+  .gauge-value { font-size: 40px; font-weight: 700; text-align: center; margin-top: -8px; }
+  .gauge-label { font-size: 15px; font-weight: 600; text-align: center; letter-spacing: 0.02em; }
+  .gauge-components { flex: 1; min-width: 220px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; }
+  .gauge-components .comp-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .gauge-components .comp-value { font-size: 15px; font-weight: 600; }
+  .gauge-note { font-size: 11px; color: var(--muted); margin-top: 10px; grid-column: 1 / -1; }
   .table-scroll { overflow-x: auto; }
   .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 30px; }
@@ -106,6 +115,18 @@
         <svg id="popChart" role="img" aria-label="Population size by cycle"></svg>
         <div class="viz-tooltip" id="pop-tooltip"></div>
       </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Agent Fear &amp; Greed Index</h2>
+    <div class="panel gauge-wrap">
+      <div class="gauge-svg-box">
+        <svg id="gaugeChart" viewBox="0 0 240 145" role="img" aria-label="Agent Fear and Greed gauge"></svg>
+        <div class="gauge-value" id="gauge-value">-</div>
+        <div class="gauge-label" id="gauge-label">-</div>
+      </div>
+      <div class="gauge-components" id="gauge-components"></div>
     </div>
   </section>
 
@@ -287,6 +308,53 @@ function attachChartHover(svg, tooltipEl) {
 attachChartHover(document.getElementById('pnlChart'), document.getElementById('pnl-tooltip'));
 attachChartHover(document.getElementById('popChart'), document.getElementById('pop-tooltip'));
 
+// Half-donut "Fear & Greed" gauge - a semicircle swept from 180deg (left,
+// index=0) to 0deg (right, index=100), same polar-to-cartesian math either
+// way: x = cx + r*cos(angle), y = cy - r*sin(angle) (y subtracted because
+// SVG's y-axis grows downward, and we want the arc to bow upward on screen).
+const GAUGE_BANDS = [
+  [0, 20, "#ef5a6f"],   // Extreme Fear - red
+  [20, 40, "#f2994a"],  // Fear - orange
+  [40, 60, "#e8b64c"],  // Neutral - amber
+  [60, 80, "#8bd7ae"],  // Greed - light green
+  [80, 100, "#26c281"], // Extreme Greed - green
+];
+
+function gaugePoint(cx, cy, r, value) {
+  const angleDeg = 180 - (value / 100) * 180;
+  const rad = angleDeg * Math.PI / 180;
+  return [cx + r * Math.cos(rad), cy - r * Math.sin(rad)];
+}
+
+function renderGauge(svg, valueEl, labelEl, index, label) {
+  const cx = 120, cy = 120, r = 95, strokeW = 26;
+  let out = '';
+  GAUGE_BANDS.forEach(([v1, v2, color]) => {
+    const [x1, y1] = gaugePoint(cx, cy, r, v1);
+    const [x2, y2] = gaugePoint(cx, cy, r, v2);
+    out += `<path d="M${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 0 1 ${x2.toFixed(1)},${y2.toFixed(1)}" `
+         + `fill="none" stroke="${color}" stroke-width="${strokeW}"/>`;
+  });
+  if (index !== null && index !== undefined && !isNaN(index)) {
+    const [nx, ny] = gaugePoint(cx, cy, r - strokeW / 2 - 6, index);
+    out += `<line x1="${cx}" y1="${cy}" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" `
+         + `stroke="#e6e8ee" stroke-width="3" stroke-linecap="round"/>`;
+    out += `<circle cx="${cx}" cy="${cy}" r="6" fill="#e6e8ee"/>`;
+  }
+  svg.innerHTML = out;
+
+  if (index === null || index === undefined || isNaN(index)) {
+    valueEl.textContent = '-';
+    labelEl.textContent = 'No data yet';
+    labelEl.style.color = 'var(--muted)';
+    return;
+  }
+  valueEl.textContent = fmt(index, 0);
+  labelEl.textContent = label;
+  const band = GAUGE_BANDS.find(([v1, v2]) => index >= v1 && index <= v2) || GAUGE_BANDS[2];
+  labelEl.style.color = band[2];
+}
+
 function ollamaBadge(status) {
   const map = {
     ready: ["green", "Ollama: ready"],
@@ -390,7 +458,7 @@ async function section(name, fn) {
 // staleness badge makes a stuck refresh visible instead of silent.
 const lastGood = {
   overview: null, population: null, leaderboard: [],
-  tradesResp: { trades: [], total: 0 }, pnlHistory: [], regimeStats: [],
+  tradesResp: { trades: [], total: 0 }, pnlHistory: [], regimeStats: [], sentiment: null,
 };
 let lastRefreshOk = false;
 let lastRefreshAt = null;
@@ -409,6 +477,7 @@ async function refresh() {
     tradesResp: `/api/trades?limit=${tradesLimit}`,
     pnlHistory: '/api/pnl_history',
     regimeStats: '/api/regime_stats',
+    sentiment: '/api/sentiment',
   };
   const keys = Object.keys(endpoints);
   const results = await Promise.allSettled(keys.map(k => fetchJson(endpoints[k])));
@@ -432,6 +501,7 @@ async function refresh() {
   const tradesResp = lastGood.tradesResp;
   const pnlHistory = lastGood.pnlHistory;
   const regimeStats = lastGood.regimeStats;
+  const sentiment = lastGood.sentiment;
   if (!overview || !population) return; // nothing successfully loaded yet at all
 
   const trades = tradesResp.trades || [];
@@ -508,6 +578,32 @@ async function refresh() {
       { label: 'Professional tier', color: PNL_SERIES_COLORS[2], values: pnlHistory.map(r => r.professional_count) },
     ];
     renderLineChart(document.getElementById('popChart'), document.getElementById('pop-legend'), cycles, series, countFmt);
+  });
+
+  section('gauge', () => {
+    // A synthetic "Fear & Greed" read on the SWARM'S OWN behavior right now
+    // (long/short bias, win rate, PnL momentum, participation) - NOT the
+    // real external crypto Fear & Greed Index, which this has no connection
+    // to. See dashboard/server.py::sentiment for exactly how it's computed.
+    const s = sentiment;
+    renderGauge(
+      document.getElementById('gaugeChart'), document.getElementById('gauge-value'),
+      document.getElementById('gauge-label'), s ? s.index : null, s ? s.label : '',
+    );
+    const compsEl = document.getElementById('gauge-components');
+    if (!s) {
+      compsEl.innerHTML = '<div class="empty">No data yet</div>';
+      return;
+    }
+    const rows = [
+      ['Long/Short Bias', fmt(s.components.long_short_bias, 0) + ` (${s.open_long}L / ${s.open_short}S open)`],
+      ['Win Rate', fmt(s.components.win_rate, 0)],
+      ['PnL Momentum', fmt(s.components.momentum, 0)],
+      ['Participation', fmt(s.components.participation, 0)],
+    ];
+    compsEl.innerHTML = rows.map(([label, value]) => `
+      <div><div class="comp-label">${label}</div><div class="comp-value">${value}</div></div>`
+    ).join('') + `<div class="gauge-note">Derived entirely from this swarm's own current trades and win rate - not the external crypto market Fear &amp; Greed Index.</div>`;
   });
 
   section('regime-stats', () => {

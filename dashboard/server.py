@@ -192,6 +192,85 @@ def create_app(config: Config) -> Flask:
             results.append(d)
         return jsonify(results)
 
+    @app.get("/api/sentiment")
+    def sentiment():
+        """A synthetic 0-100 'Fear & Greed' read on the SWARM'S OWN current
+        behavior - NOT the real crypto-market Fear & Greed Index (that's an
+        external, market-wide metric this project has no relationship to).
+        This one is built entirely from what your agents are actually doing
+        right now, as four equally-weighted components:
+
+        - Long/short bias of currently open positions (more long = greedier,
+          more short = more fearful - the standard risk-on/risk-off convention).
+        - Overall win rate across all closed trades (higher = more confident).
+        - Recent realized-PnL momentum (comparing the latest cycle's swarm-wide
+          total to ~10 cycles ago).
+        - Participation rate: what fraction of active traders currently have
+          an open position (more agents deployed = greedier/more confident,
+          more sitting out = more cautious/fearful).
+        """
+        conn = get_conn()
+
+        side_rows = conn.execute(
+            "SELECT side, COUNT(*) AS n FROM trades WHERE result = 'open' GROUP BY side"
+        ).fetchall()
+        side_counts = {r["side"]: r["n"] for r in side_rows}
+        long_n, short_n = side_counts.get("long", 0), side_counts.get("short", 0)
+        open_total = long_n + short_n
+        bias_score = (long_n / open_total * 100.0) if open_total else 50.0
+
+        closed = conn.execute(
+            "SELECT COUNT(*) AS n, SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) AS wins "
+            "FROM trades WHERE result IN ('win','loss')"
+        ).fetchone()
+        win_rate = (closed["wins"] / closed["n"]) if closed["n"] else 0.5
+        win_rate_score = win_rate * 100.0
+
+        active_trader_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM agents WHERE status='alive' AND is_active_trader=1"
+        ).fetchone()["n"]
+        participation_score = (open_total / active_trader_count * 100.0) if active_trader_count else 50.0
+        participation_score = min(100.0, participation_score)
+
+        pnl_rows = conn.execute(
+            "SELECT total_realized_pnl FROM population_cycles ORDER BY id DESC LIMIT 10"
+        ).fetchall()
+        pnl_vals = [r["total_realized_pnl"] for r in pnl_rows if r["total_realized_pnl"] is not None]
+        if len(pnl_vals) >= 2:
+            latest, earliest = pnl_vals[0], pnl_vals[-1]
+            diff = latest - earliest
+            scale = max(10.0, abs(earliest))
+            momentum_score = 50.0 + max(-25.0, min(25.0, (diff / scale) * 25.0))
+        else:
+            momentum_score = 50.0
+
+        index = (bias_score + win_rate_score + participation_score + momentum_score) / 4.0
+        index = max(0.0, min(100.0, index))
+
+        if index < 25:
+            label = "Extreme Fear"
+        elif index < 45:
+            label = "Fear"
+        elif index <= 55:
+            label = "Neutral"
+        elif index <= 75:
+            label = "Greed"
+        else:
+            label = "Extreme Greed"
+
+        return jsonify({
+            "index": round(index, 1),
+            "label": label,
+            "components": {
+                "long_short_bias": round(bias_score, 1),
+                "win_rate": round(win_rate_score, 1),
+                "participation": round(participation_score, 1),
+                "momentum": round(momentum_score, 1),
+            },
+            "open_long": long_n,
+            "open_short": short_n,
+        })
+
     @app.get("/api/pnl_history")
     def pnl_history():
         conn = get_conn()
