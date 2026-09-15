@@ -147,15 +147,39 @@ function ollamaBadge(status) {
   return `<span class="badge"><span class="dot ${color}"></span>${label}</span>`;
 }
 
+// Short line shown in the leaderboard cell (truncated by CSS ellipsis) -
+// what kind of setup this agent trades and its core entry trigger.
 function strategySummary(genomeJson) {
   try {
     const g = JSON.parse(genomeJson);
-    return `${g.coin} EMA ${g.ema_fast}/${g.ema_slow} &middot; RSI${g.rsi_period} `
-         + `(${g.rsi_oversold}/${g.rsi_overbought}) &middot; ATR ${g.min_atr_pct}-${g.max_atr_pct}% `
-         + `&middot; vol&ge;${g.volume_spike_threshold}x &middot; SL ${g.stop_loss_pct}% / TP ${g.take_profit_pct}% `
-         + `&middot; size ${g.position_size_pct}% &middot; hold ${g.max_hold_hours}h`;
+    const style = g.rsi_oversold <= 25 ? 'Deep-value reversion' : 'Momentum reversion';
+    return `${style} &middot; EMA ${g.ema_fast}/${g.ema_slow} trend &middot; `
+         + `RSI${g.rsi_period}&lt;${g.rsi_oversold} + vol&ge;${g.volume_spike_threshold}x &rarr; LONG `
+         + `(mirrored &gt;${g.rsi_overbought} &rarr; SHORT) &middot; SL ${g.stop_loss_pct}%/TP ${g.take_profit_pct}% &middot; `
+         + `size ${g.position_size_pct}% &middot; hold&le;${g.max_hold_hours}h`;
   } catch (e) {
     return '-';
+  }
+}
+
+// Full plain-English explanation shown on hover (title attr) - every
+// confirmation this agent's genome checks before it will actually enter,
+// not just the headline EMA/RSI trigger.
+function strategyExplain(genomeJson) {
+  try {
+    const g = JSON.parse(genomeJson);
+    const style = g.rsi_oversold <= 25 ? 'Deep-value mean-reversion' : 'Momentum mean-reversion';
+    return `${style} strategy on ${g.coin} (${g.timeframe}).\n`
+      + `Trend filter: EMA ${g.ema_fast}/${g.ema_slow} (needs bigger-picture trend agreement, plus 1h higher-timeframe trend when live).\n`
+      + `LONG entry: RSI(${g.rsi_period}) below ${g.rsi_oversold} with volume >= ${g.volume_spike_threshold}x its ${g.volume_lookback}-candle average.\n`
+      + `SHORT entry: RSI(${g.rsi_period}) above ${g.rsi_overbought}, same volume requirement.\n`
+      + `Extra confirmations weighed in: Bollinger Bands(${g.bb_period}, ${g.bb_std_dev} std dev), Stochastic RSI(${g.stoch_rsi_period}, oversold<${g.stoch_rsi_oversold}/overbought>${g.stoch_rsi_overbought}), `
+      + `MACD signal period ${g.macd_signal_period}, VWAP deviation >= ${g.vwap_deviation_threshold}%, order-book imbalance >= ${g.ob_imbalance_threshold}, `
+      + `open-interest change >= ${g.oi_change_threshold}%, funding-rate extreme >= ${g.funding_extreme}, premium extreme >= ${g.premium_extreme}, daily momentum >= ${g.daily_momentum_threshold}%.\n`
+      + `Only trades when volatility (ATR) is between ${g.min_atr_pct}% and ${g.max_atr_pct}% of price, and spread <= ${g.max_spread_pct}%.\n`
+      + `Risk per trade: ${g.position_size_pct}% of balance, stop-loss ${g.stop_loss_pct}%, take-profit ${g.take_profit_pct}%, exits automatically after ${g.max_hold_hours}h if neither hits.`;
+  } catch (e) {
+    return genomeJson;
   }
 }
 
@@ -249,7 +273,7 @@ async function refresh() {
         <td class="${a.tier === 'professional' ? 'tier-pro' : 'tier-std'}">${a.tier}</td>
         <td>${a.generation}</td>
         <td>${a.is_active_trader ? '<span class="flag on">TRADER</span>' : ''} ${a.is_live_trader ? '<span class="flag on">LIVE</span>' : ''}</td>
-        <td title="${a.genome_json}" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;">${strategySummary(a.genome_json)}</td>
+        <td title="${strategyExplain(a.genome_json)}" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;">${strategySummary(a.genome_json)}</td>
         <td>${a.wins}</td><td>${a.losses}</td><td>${a.win_streak}</td><td>${a.trades_count}</td>
         <td>$${fmt(a.balance)}</td>
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
