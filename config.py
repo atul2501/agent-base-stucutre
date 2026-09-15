@@ -171,9 +171,6 @@ class Config:
             return self.live_trading_confirmed == LIVE_CONFIRMATION_PHRASE
         return True  # live on testnet is fake money - no extra confirmation needed
 
-    def is_paper(self) -> bool:
-        return not self.is_live()
-
     def is_using_cloud_ollama(self) -> bool:
         return "ollama.com" in self.ollama_host
 
