@@ -15,7 +15,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from flask import Flask, g, jsonify, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 
 from config import Config
 from reasoning import ollama_advisor
@@ -128,10 +128,18 @@ def create_app(config: Config) -> Flask:
 
     @app.get("/api/trades")
     def trades():
+        # `limit` grows via the dashboard's "Load More" button (15 at a
+        # time) instead of true offset pagination - simpler to keep in sync
+        # with the 5s auto-refresh (which just re-fetches the top `limit`
+        # every tick) without the loaded set shifting or duplicating as new
+        # trades come in. Capped so a runaway query string can't force a
+        # huge full-table scan.
+        limit = min(max(int(request.args.get("limit", 15)), 1), 2000)
         conn = get_conn()
         rows = conn.execute(
-            "SELECT * FROM trades ORDER BY id DESC LIMIT 50"
+            "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
+        total = conn.execute("SELECT COUNT(*) AS c FROM trades").fetchone()["c"]
         last_price_row = conn.execute("SELECT value FROM meta WHERE key = 'last_price'").fetchone()
         last_price = float(last_price_row["value"]) if last_price_row else None
 
@@ -151,7 +159,7 @@ def create_app(config: Config) -> Flask:
             else:
                 d["unrealized_pnl"] = None
             results.append(d)
-        return jsonify(results)
+        return jsonify({"trades": results, "total": total})
 
     @app.get("/api/regime_stats")
     def regime_stats():

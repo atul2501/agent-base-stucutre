@@ -130,6 +130,10 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div style="text-align:center; margin-top:12px;">
+        <button id="trades-load-more" class="badge" style="cursor:pointer; display:none; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font:inherit;">Load more</button>
+        <div id="trades-end" class="empty" style="display:none; padding:8px;">No more trades</div>
+      </div>
     </div>
   </section>
 
@@ -148,6 +152,12 @@ const ago = (iso) => {
 };
 
 let pnlChart = null;
+// How many trades to show, grown 15 at a time by the "Load more" button.
+// Re-sent as `limit` on every 5s auto-refresh too, instead of true offset
+// pagination - keeps the displayed set simply "the top N", so it can't
+// duplicate or shift as new trades come in between clicks.
+let tradesLimit = 15;
+const TRADES_PAGE_SIZE = 15;
 
 function ollamaBadge(status) {
   const map = {
@@ -243,13 +253,13 @@ async function section(name, fn) {
 }
 
 async function refresh() {
-  let overview, population, leaderboard, trades, pnlHistory, regimeStats;
+  let overview, population, leaderboard, tradesResp, pnlHistory, regimeStats;
   try {
-    [overview, population, leaderboard, trades, pnlHistory, regimeStats] = await Promise.all([
+    [overview, population, leaderboard, tradesResp, pnlHistory, regimeStats] = await Promise.all([
       fetch('/api/overview').then(r => r.json()),
       fetch('/api/population').then(r => r.json()),
       fetch('/api/leaderboard').then(r => r.json()),
-      fetch('/api/trades').then(r => r.json()),
+      fetch(`/api/trades?limit=${tradesLimit}`).then(r => r.json()),
       fetch('/api/pnl_history').then(r => r.json()),
       fetch('/api/regime_stats').then(r => r.json()),
     ]);
@@ -257,6 +267,8 @@ async function refresh() {
     console.error('dashboard: failed to fetch API data', e);
     return;
   }
+  const trades = tradesResp.trades || [];
+  const tradesTotal = tradesResp.total || 0;
 
   section('header', () => {
     document.getElementById('title').innerHTML = `Agent Swarm <span>${overview.token} &middot; ${overview.timeframe}</span>`;
@@ -377,6 +389,12 @@ async function refresh() {
         <td>${ago(t.opened_at)}</td>
       </tr>`;
     }).join('') : '<tr><td colspan="9" class="empty">No trades yet</td></tr>';
+
+    const loadMoreBtn = document.getElementById('trades-load-more');
+    const endMsg = document.getElementById('trades-end');
+    const moreAvailable = trades.length < tradesTotal;
+    loadMoreBtn.style.display = moreAvailable ? '' : 'none';
+    endMsg.style.display = (!moreAvailable && trades.length > 0) ? '' : 'none';
   });
 
   if (overview.is_live) {
@@ -404,6 +422,11 @@ async function refresh() {
     document.getElementById('live-section').style.display = 'none';
   }
 }
+
+document.getElementById('trades-load-more').addEventListener('click', () => {
+  tradesLimit += TRADES_PAGE_SIZE;
+  refresh();
+});
 
 refresh();
 setInterval(refresh, 5000);
