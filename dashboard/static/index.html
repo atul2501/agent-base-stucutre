@@ -60,6 +60,8 @@
   .result-win { color: var(--green); } .result-loss { color: var(--red); } .result-open { color: var(--muted); }
   .regime-trending-up { color: var(--green); } .regime-trending-down { color: var(--red); }
   .regime-ranging { color: var(--amber); } .regime-unknown { color: var(--muted); }
+  .health-ok { color: var(--green); } .health-drifted { color: var(--amber); font-weight: 600; }
+  .health-pending { color: var(--muted); }
   .table-scroll { overflow-x: auto; }
   .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 30px; }
@@ -111,6 +113,7 @@
           <th title="% of the agent's own balance risked as notional per trade (paper trading - no real borrowing)">Leverage</th>
           <th>Wins</th><th>Losses</th>
           <th>Streak</th><th>Trades</th><th>Balance</th><th>Total PnL</th>
+          <th title="Periodic re-backtest of this agent's genome against the newest market data - flags a veteran that's drifted out of sync with current conditions instead of silently trusting an old win. Informational only.">Health</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -188,6 +191,22 @@ function agentLeveragePct(genomeJson) {
   } catch (e) {
     return null;
   }
+}
+
+// "Health" = the result of the periodic re-backtest against the newest
+// market data (see agents/population.py::revalidate_top_agents). Not yet
+// checked (revalidated_at is null - e.g. revalidation just started, or this
+// agent isn't in the top revalidation_agent_limit) shows "pending", not a
+// false pass.
+function healthCell(a, driftThreshold) {
+  if (a.revalidated_at === null || a.revalidated_at === undefined) {
+    return `<span class="health-pending" title="Not re-checked yet">pending</span>`;
+  }
+  const score = a.revalidation_score;
+  const drifted = score !== null && score !== undefined && score < driftThreshold;
+  const label = drifted ? 'DRIFTED' : 'ok';
+  const cls = drifted ? 'health-drifted' : 'health-ok';
+  return `<span class="${cls}" title="Re-backtest score vs newest data: ${fmt(score)} (checked ${ago(a.revalidated_at)})">${label}</span>`;
 }
 
 // Full plain-English explanation shown on hover (title attr) - every
@@ -324,7 +343,8 @@ async function refresh() {
         <td>${a.wins}</td><td>${a.losses}</td><td>${a.win_streak}</td><td>${a.trades_count}</td>
         <td>$${fmt(a.balance)}</td>
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
-      </tr>`).join('') : '<tr><td colspan="12" class="empty">No agents yet</td></tr>';
+        <td>${healthCell(a, overview.revalidation_drift_threshold)}</td>
+      </tr>`).join('') : '<tr><td colspan="13" class="empty">No agents yet</td></tr>';
   });
 
   section('trades', () => {

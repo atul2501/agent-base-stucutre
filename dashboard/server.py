@@ -66,6 +66,8 @@ def create_app(config: Config) -> Flask:
             "live_active_trader_count": config.live_active_trader_count,
             "live_max_total_notional_usd": config.live_max_total_notional_usd,
             "live_max_leverage": config.live_max_leverage,
+            "revalidation_enabled": config.revalidation_enabled,
+            "revalidation_drift_threshold": config.revalidation_drift_threshold,
             "ollama": ollama_advisor.get_status(),
             "last_cycle": _row_to_dict(last_cycle) if last_cycle else None,
             "server_time": time.time(),
@@ -111,7 +113,8 @@ def create_app(config: Config) -> Flask:
         # selection - these had drifted apart before.
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
-                      balance, wins, losses, win_streak, total_pnl, trades_count, genome_json
+                      balance, wins, losses, win_streak, total_pnl, trades_count, genome_json,
+                      revalidation_score, revalidated_at
                FROM agents WHERE status='alive'
                ORDER BY (
                  CASE WHEN (balance - total_pnl) > 0

@@ -33,6 +33,8 @@ class AgentRow:
     created_at: str
     died_at: Optional[str]
     death_reason: Optional[str]
+    revalidation_score: Optional[float]
+    revalidated_at: Optional[str]
 
     @property
     def genome(self) -> dict:
@@ -83,6 +85,12 @@ class Database:
         existing_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(trades)")}
         if "regime" not in existing_cols:
             self.conn.execute("ALTER TABLE trades ADD COLUMN regime TEXT")
+            self.conn.commit()
+
+        agent_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(agents)")}
+        if "revalidation_score" not in agent_cols:
+            self.conn.execute("ALTER TABLE agents ADD COLUMN revalidation_score REAL")
+            self.conn.execute("ALTER TABLE agents ADD COLUMN revalidated_at TEXT")
             self.conn.commit()
 
     def close(self) -> None:
@@ -164,6 +172,17 @@ class Database:
         self.conn.execute("UPDATE agents SET tier = ? WHERE id = ?", (tier, agent_id))
         self.conn.commit()
 
+    def set_revalidation(self, agent_id: int, score: float) -> None:
+        """Records the result of re-backtesting an already-proven agent's
+        genome against the newest data - informational only (see
+        agents/population.py::revalidate_top_agents), never touches status,
+        fitness, or the do-or-die kill mechanic."""
+        self.conn.execute(
+            "UPDATE agents SET revalidation_score = ?, revalidated_at = ? WHERE id = ?",
+            (score, now_iso(), agent_id),
+        )
+        self.conn.commit()
+
     def record_win(self, agent_id: int, pnl: float) -> None:
         self.conn.execute(
             """UPDATE agents
@@ -212,6 +231,8 @@ class Database:
             created_at=row["created_at"],
             died_at=row["died_at"],
             death_reason=row["death_reason"],
+            revalidation_score=row["revalidation_score"],
+            revalidated_at=row["revalidated_at"],
         )
 
     # ---- trades ----

@@ -168,6 +168,36 @@ class Orchestrator:
 
         self.db.set_live_position(self.config.token, desired_side, desired_size, desired_notional)
 
+    def _refresh_backtest_window(self) -> None:
+        """The recent-window backtest data (used for new-agent screening AND
+        revalidation) is otherwise only ever fetched once at startup - stale
+        after the first few hours of a long-running deployment. Refetches it
+        periodically so "backtested against the newest data" stays true.
+        Mutates the Population instance's own attributes in place; failure
+        just keeps the previous (older but still usable) window."""
+        try:
+            snap = self.hl.get_snapshot(self.config.token, self.config.timeframe,
+                                         candle_lookback_hours=self.config.backtest_lookback_hours)
+            funding = self.hl.get_funding_history(self.config.token, self.config.backtest_lookback_hours)
+            self.population.backtest_candles = snap.candles
+            self.population.backtest_funding = funding
+            log.info("Refreshed recent-window backtest data: %d candles, %d funding points",
+                      len(snap.candles), len(funding))
+        except Exception:
+            log.exception("Failed to refresh recent-window backtest data - keeping the previous window")
+
+    def _maybe_revalidate(self) -> None:
+        """Periodically re-backtests already-proven top agents against the
+        (freshly-refreshed) recent-window data and flags drift on the
+        dashboard - see agents/population.py::revalidate_top_agents. Purely
+        informational: never kills, culls, or re-ranks anything."""
+        try:
+            checked = self.population.revalidate_top_agents()
+            if checked:
+                log.info("Revalidated %d top agents against the current recent-window data", checked)
+        except Exception:
+            log.exception("Revalidation pass failed - will retry next scheduled cycle")
+
     def run_cycle(self) -> None:
         self.cycle += 1
         snap = self._fetch_snapshot()
@@ -188,6 +218,11 @@ class Orchestrator:
         # blank "-" for however long a position stays open (max_hold_hours
         # can be up to 96h) - see dashboard/server.py's /api/trades.
         self.db.set_meta("last_price", str(snap.mid_price))
+
+        if self.config.backtest_enabled and self.cycle % self.config.backtest_refresh_interval_cycles == 0:
+            self._refresh_backtest_window()
+        if self.config.revalidation_enabled and self.cycle % self.config.revalidation_interval_cycles == 0:
+            self._maybe_revalidate()
 
         log.info(
             "Cycle %d done | %s | alive=%d active_traders=%d professional=%d best_agent=%s best_pnl=%s",

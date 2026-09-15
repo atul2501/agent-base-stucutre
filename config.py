@@ -97,6 +97,26 @@ class Config:
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))
     starting_paper_balance: float = float(os.getenv("STARTING_PAPER_BALANCE", "1000"))
 
+    # --- Revalidation: periodic re-backtest of already-proven agents ---
+    # A veteran agent proves itself once (a real win) and then keeps trading
+    # indefinitely until it randomly loses - nothing re-checks whether it
+    # still fits the CURRENT market. This periodically re-backtests the
+    # top-fitness alive agents against the freshest recent-window data and
+    # flags (dashboard only) any whose genome has drifted out of sync - it
+    # never kills, culls, or re-ranks anything; the live do-or-die mechanic
+    # and active-trader selection are completely unchanged by this. See
+    # agents/population.py::revalidate_top_agents.
+    revalidation_enabled: bool = _bool("REVALIDATION_ENABLED", True)
+    revalidation_interval_cycles: int = int(os.getenv("REVALIDATION_INTERVAL_CYCLES", "20"))
+    revalidation_agent_limit: int = int(os.getenv("REVALIDATION_AGENT_LIMIT", "50"))
+    # A re-backtest score below this is flagged as "drifted" on the dashboard.
+    revalidation_drift_threshold: float = float(os.getenv("REVALIDATION_DRIFT_THRESHOLD", "-5.0"))
+    # The recent-window backtest data (used both for new-agent screening and
+    # for revalidation above) is only ever fetched once at startup otherwise -
+    # stale after the first few hours of a long-running deployment. Refetched
+    # on this cadence so "against the newest data" stays true over time.
+    backtest_refresh_interval_cycles: int = int(os.getenv("BACKTEST_REFRESH_INTERVAL_CYCLES", "20"))
+
     # --- Council vote: a cheap ensemble second opinion for ambiguous signals ---
     # When an agent's own rule-based signal is ambiguous (score 0-2), poll the
     # current top-fitness alive agents' OWN genomes against the same market

@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at TEXT NOT NULL,
     died_at TEXT,
     death_reason TEXT,
+    -- Periodic re-backtest of an already-proven agent's genome against the
+    -- NEWEST market data (see agents/population.py::revalidate_top_agents) -
+    -- purely informational, does not affect the live do-or-die mechanic or
+    -- active-trader ranking. Lets a drifted-out-of-sync veteran be flagged
+    -- on the dashboard instead of silently coasting until it randomly loses.
+    revalidation_score REAL,
+    revalidated_at TEXT,
     FOREIGN KEY (parent_id) REFERENCES agents(id)
 );
 

@@ -145,6 +145,28 @@ class Population:
         partner = self.rng.choice(top)
         return Genome.from_dict(partner.genome)
 
+    def revalidate_top_agents(self) -> int:
+        """Re-backtests the top-fitness alive agents' OWN genomes against
+        `self.backtest_candles`/`self.backtest_funding` (the same
+        recent-window data used to screen new agents - kept fresh by
+        orchestrator's periodic refresh) and records the result via
+        `db.set_revalidation`. Purely informational - flags a drifted
+        veteran on the dashboard instead of silently trusting a genome that
+        proved itself once, potentially a long time ago under different
+        market conditions. Never touches status, fitness, or which agents
+        are active/live traders. Returns how many agents were checked."""
+        if not self.config.backtest_enabled or not self.backtest_candles:
+            return 0
+        alive = self.db.list_alive_agents()
+        top = sorted(alive, key=lambda a: a.fitness, reverse=True)[: self.config.revalidation_agent_limit]
+        for agent in top:
+            genome = Genome.from_dict(agent.genome)
+            result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
+                                      starting_balance=self.config.starting_paper_balance)
+            score = fitness_score(result)
+            self.db.set_revalidation(agent.id, score)
+        return len(top)
+
     def council_genomes(self, exclude_id: int) -> list[Genome]:
         """The current top-fitness alive agents' own genomes (excluding the
         one asking) - an ensemble "second opinion" panel for an ambiguous
