@@ -743,12 +743,13 @@ async function refresh() {
     const cards = [
       ["Alive Agents", population.alive_count || 0, `of ${overview.population_cap} cap`],
       ["Dead Agents", population.dead_count || 0, "lost a trade - do or die"],
+      ["Total Agents Created", population.total_ever || 0, `${population.alive_count || 0} alive, ${population.dead_count || 0} dead`],
       ["Active Traders", population.active_trader_count || 0, `of top ${overview.active_trader_count}`],
       ["Live Traders", population.live_trader_count || 0, overview.is_live ? `of top ${overview.live_active_trader_count}` : 'not armed'],
       ["Professional Tier", population.professional_count || 0, "proven lineages"],
       ["Total Realized PnL", (totalPnl>=0?'+':'') + '$' + fmt(totalPnl), `${population.closed_trades||0} closed trades`],
       ["Overall Win Rate", pct(population.overall_win_rate), "across all closed trades"],
-      ["Max Generation", population.max_generation || 0, `${population.total_ever||0} agents ever created`],
+      ["Max Generation", population.max_generation || 0, "deepest lineage reached"],
       ["Avg Balance (alive)", '$' + fmt(population.avg_balance), "paper balance"],
     ];
     document.getElementById('stat-cards').innerHTML = cards.map(([label, value, sub]) => `
