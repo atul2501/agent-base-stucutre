@@ -354,6 +354,22 @@ def create_app(config: Config) -> Flask:
         ).fetchall()
         return jsonify([_row_to_dict(r) for r in rows])
 
+    @app.get("/api/lineage")
+    def lineage():
+        # Every agent ever created (alive or dead), just enough fields to
+        # build a parent -> children family tree client-side. Small enough
+        # to send in full even near the population cap (500 alive + however
+        # many have died), and the tree shape itself - who bred from whom,
+        # how deep lineages go, which branches died out - is exactly what a
+        # flat leaderboard (top 50 by fitness, alive only) can't show.
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT id, parent_id, generation, status, tier,
+                      wins, losses, trades_count, total_pnl, created_at, died_at
+               FROM agents ORDER BY id"""
+        ).fetchall()
+        return jsonify([_row_to_dict(r) for r in rows])
+
     @app.get("/api/pnl_history")
     def pnl_history():
         conn = get_conn()

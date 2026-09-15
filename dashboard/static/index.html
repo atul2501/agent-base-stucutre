@@ -83,6 +83,29 @@
   .table-scroll { overflow-x: auto; }
   .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 30px; }
+
+  .lineage-forest { display: flex; flex-direction: column; gap: 4px; }
+  .lineage-tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--border); }
+  .lineage-tree > ul { padding-left: 0; border-left: none; }
+  .lineage-tree li { margin: 5px 0; position: relative; }
+  .lineage-node {
+    display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px;
+    border-radius: 7px; background: var(--panel-2); border: 1px solid var(--border); font-size: 12.5px;
+  }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+  .status-dot.alive { background: var(--green); }
+  .status-dot.dead { background: var(--red); }
+  .lineage-node .lg-id { font-weight: 700; }
+  .lineage-node .lg-gen {
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+    background: rgba(79,140,255,0.12); color: var(--accent);
+  }
+  .lineage-node.lg-dead { opacity: 0.55; }
+  .lineage-node.lg-dead .lg-id { text-decoration: line-through; }
+  .lineage-node .lg-pro { color: var(--purple); font-weight: 600; }
+  .lineage-node .lg-stat { color: var(--muted); }
+  .lineage-legend { display: flex; gap: 18px; font-size: 12px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
+  .lineage-legend span { display: inline-flex; align-items: center; gap: 6px; }
 </style>
 </head>
 <body>
@@ -215,6 +238,19 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Family Tree - Who Bred Whom</h2>
+    <div class="panel">
+      <div class="lineage-legend">
+        <span><span class="status-dot alive"></span>Alive</span>
+        <span><span class="status-dot dead"></span>Dead (lost a do-or-die trade)</span>
+        <span><span class="lg-pro">PRO</span> = professional tier (both children proved out)</span>
+        <span>Indented = child of the agent above it. A win spawns 2 children one generation deeper.</span>
+      </div>
+      <div class="lineage-forest" id="lineage-forest"></div>
     </div>
   </section>
 
@@ -531,6 +567,69 @@ function strategyExplain(genomeJson) {
   }
 }
 
+// Renders the full agent population as parent -> child family trees, so
+// "generation" stops being an abstract number and becomes a visible
+// who-bred-whom picture: a win spawns 2 children one level deeper, indented
+// under their parent. Only roots that actually have descendants are drawn
+// as trees - the (usually much larger) set of gen-0 seed agents that
+// haven't won yet are just a count underneath, since a flat list of 49
+// childless singletons wouldn't help anyone understand the lineage shape.
+function lineageNodeHtml(a) {
+  const dead = a.status === 'dead';
+  const proTag = a.tier === 'professional' ? '<span class="lg-pro">PRO</span>' : '';
+  const stat = dead
+    ? `died ${ago(a.died_at)} &middot; ${a.trades_count} trade${a.trades_count===1?'':'s'}`
+    : `${a.wins}W/${a.losses}L &middot; ${a.trades_count} trade${a.trades_count===1?'':'s'} &middot; `
+      + `<span class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</span>`;
+  return `<span class="lineage-node ${dead ? 'lg-dead' : ''}" title="Created ${ago(a.created_at)}">`
+    + `<span class="status-dot ${dead ? 'dead' : 'alive'}"></span>`
+    + `<span class="lg-id">#${a.id}</span>`
+    + `<span class="lg-gen">gen ${a.generation}</span>`
+    + proTag
+    + `<span class="lg-stat">${stat}</span>`
+    + `</span>`;
+}
+
+function renderLineageNode(a, childrenOf) {
+  const kids = childrenOf.get(a.id) || [];
+  let html = `<li>${lineageNodeHtml(a)}`;
+  if (kids.length) {
+    html += `<ul>${kids.map(k => renderLineageNode(k, childrenOf)).join('')}</ul>`;
+  }
+  return html + '</li>';
+}
+
+function renderLineageForest(agents) {
+  const el = document.getElementById('lineage-forest');
+  if (!agents || !agents.length) {
+    el.innerHTML = '<div class="empty">No agents yet</div>';
+    return;
+  }
+  const childrenOf = new Map();
+  agents.forEach(a => {
+    if (a.parent_id !== null && a.parent_id !== undefined) {
+      if (!childrenOf.has(a.parent_id)) childrenOf.set(a.parent_id, []);
+      childrenOf.get(a.parent_id).push(a);
+    }
+  });
+  const roots = agents.filter(a => a.parent_id === null || a.parent_id === undefined);
+  const familyRoots = roots.filter(r => childrenOf.has(r.id));
+  const soloCount = roots.length - familyRoots.length;
+
+  if (!familyRoots.length) {
+    el.innerHTML = `<div class="empty">No one has bred yet - ${soloCount} seed agent${soloCount === 1 ? '' : 's'} still waiting on a first win.</div>`;
+    return;
+  }
+
+  const trees = familyRoots
+    .map(r => `<div class="lineage-tree"><ul>${renderLineageNode(r, childrenOf)}</ul></div>`)
+    .join('');
+  const note = soloCount
+    ? `<div class="empty" style="text-align:left;padding:10px 2px 0;">+ ${soloCount} other seed agent${soloCount === 1 ? '' : 's'} alive with no children yet (haven't won a trade)</div>`
+    : '';
+  el.innerHTML = trees + note;
+}
+
 // Each section renders independently - one section throwing (e.g. a
 // blocked/slow CDN breaking the chart) must never prevent the others from
 // updating. A previous version wrapped everything in one try/catch, so a
@@ -552,7 +651,7 @@ async function section(name, fn) {
 // fetched independently and falls back to its own last-good value, and a
 // staleness badge makes a stuck refresh visible instead of silent.
 const lastGood = {
-  overview: null, population: null, leaderboard: [],
+  overview: null, population: null, leaderboard: [], lineage: [],
   tradesResp: { trades: [], total: 0 }, pnlHistory: [], regimeStats: [], sentiment: null,
   winRateTrend: [], durationHistogram: [], lifespanHistogram: [], generationDepth: [],
 };
@@ -570,6 +669,7 @@ async function refresh() {
     overview: '/api/overview',
     population: '/api/population',
     leaderboard: '/api/leaderboard',
+    lineage: '/api/lineage',
     tradesResp: `/api/trades?limit=${tradesLimit}`,
     pnlHistory: '/api/pnl_history',
     regimeStats: '/api/regime_stats',
@@ -598,6 +698,7 @@ async function refresh() {
   const overview = lastGood.overview;
   const population = lastGood.population;
   const leaderboard = lastGood.leaderboard;
+  const lineage = lastGood.lineage;
   const tradesResp = lastGood.tradesResp;
   const pnlHistory = lastGood.pnlHistory;
   const regimeStats = lastGood.regimeStats;
@@ -791,6 +892,10 @@ async function refresh() {
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
         <td>${healthCell(a, overview.revalidation_drift_threshold)}</td>
       </tr>`).join('') : '<tr><td colspan="13" class="empty">No agents yet</td></tr>';
+  });
+
+  section('lineage', () => {
+    renderLineageForest(lineage);
   });
 
   section('trades', () => {
