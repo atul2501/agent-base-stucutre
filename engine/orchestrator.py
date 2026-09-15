@@ -15,7 +15,9 @@ from market.hyperliquid_client import HyperliquidClient, MarketSnapshot
 from agents.population import Population
 from reasoning import ollama_advisor
 from strategy.genome import Genome
-from strategy.signals import build_features, classify_regime, compute_htf_trend, evaluate_entry, evaluate_exit
+from strategy.signals import (
+    build_features, classify_regime, compute_htf_trend, council_consult, evaluate_entry, evaluate_exit,
+)
 from trading.live_executor import LiveExecutor
 from trading.paper_executor import close_paper_position, open_paper_position
 
@@ -82,6 +84,12 @@ class Orchestrator:
             features = build_features(snap, genome, self.prev_open_interest, self.htf_trend_up)
             signal = evaluate_entry(genome, features)
 
+            if signal.ambiguous and self.config.council_enabled:
+                council = self.population.council_genomes(agent.id)
+                signal = council_consult(
+                    signal, snap, self.prev_open_interest, self.htf_trend_up, council,
+                    self.config.council_quorum_pct, self.config.council_min_active_voters,
+                )
             if signal.ambiguous and self.config.ollama_enabled:
                 signal = ollama_advisor.consult(genome, features, signal)
 

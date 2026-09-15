@@ -325,6 +325,59 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
     return Signal(candidate, confidence, score, reasons, ambiguous=False)
 
 
+def council_consult(
+    candidate: Signal,
+    snap: MarketSnapshot,
+    prev_open_interest: float | None,
+    htf_trend_up: bool | None,
+    council_genomes: list[Genome],
+    quorum_pct: float,
+    min_active_voters: int,
+) -> Signal:
+    """Ensemble second opinion for an ambiguous signal: independently runs
+    every council agent's OWN genome against the same market snapshot and
+    checks whether enough of them agree. A council member's `hold` just
+    means ITS unrelated genome/thresholds didn't trigger on this snapshot -
+    not that it disagrees with the candidate - so holds are excluded from
+    the quorum math entirely; only long/short votes count as "active."
+
+    Returns a decisive Signal (ambiguous=False) if the candidate direction
+    is confirmed or vetoed by quorum; otherwise returns `candidate`
+    unchanged (still ambiguous) so the caller can fall back to Ollama, same
+    as before this existed.
+    """
+    long_votes = short_votes = 0
+    for genome in council_genomes:
+        features = build_features(snap, genome, prev_open_interest, htf_trend_up)
+        vote = evaluate_entry(genome, features)
+        if vote.action == "long":
+            long_votes += 1
+        elif vote.action == "short":
+            short_votes += 1
+
+    active = long_votes + short_votes
+    if active < min_active_voters:
+        return candidate
+
+    agree = long_votes if candidate.action == "long" else short_votes
+    oppose = short_votes if candidate.action == "long" else long_votes
+
+    if agree / active >= quorum_pct:
+        return Signal(
+            candidate.action, round(agree / active, 2), candidate.score,
+            candidate.reasons + [f"council: {agree}/{active} active voters agree {candidate.action}"],
+            ambiguous=False,
+        )
+    if oppose / active >= quorum_pct:
+        opposite = "short" if candidate.action == "long" else "long"
+        return Signal(
+            "hold", 0.0, candidate.score,
+            candidate.reasons + [f"council: {oppose}/{active} active voters favor {opposite} instead - vetoed"],
+            ambiguous=False,
+        )
+    return candidate
+
+
 def evaluate_exit(genome: Genome, trade_row, f: Features, now: datetime | None = None) -> tuple[str, str] | None:
     """Returns (result, reason) if the open position should close, else None.
 

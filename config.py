@@ -97,6 +97,25 @@ class Config:
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))
     starting_paper_balance: float = float(os.getenv("STARTING_PAPER_BALANCE", "1000"))
 
+    # --- Council vote: a cheap ensemble second opinion for ambiguous signals ---
+    # When an agent's own rule-based signal is ambiguous (score 0-2), poll the
+    # current top-fitness alive agents' OWN genomes against the same market
+    # snapshot before ever calling Ollama - if enough of them independently
+    # reach the same directional call, that's a stronger, free, and
+    # rate-limit-proof confirmation than one LLM guess. Ollama (below) is
+    # only consulted afterward, as a tie-breaker for whatever the council
+    # itself couldn't resolve. See strategy/signals.py::council_consult.
+    council_enabled: bool = _bool("COUNCIL_ENABLED", True)
+    council_size: int = int(os.getenv("COUNCIL_SIZE", "10"))
+    # Fraction of ACTIVE (non-hold) council votes needed to confirm or veto
+    # the candidate direction - a hold vote just means that agent's own
+    # unrelated genome didn't trigger, not that it disagrees, so holds are
+    # excluded from the quorum math entirely (see council_consult).
+    council_quorum_pct: float = float(os.getenv("COUNCIL_QUORUM_PCT", "0.6"))
+    # Below this many active (long/short) votes, the poll is too thin to mean
+    # anything - falls through to Ollama/hold instead of a shaky "majority of 2".
+    council_min_active_voters: int = int(os.getenv("COUNCIL_MIN_ACTIVE_VOTERS", "3"))
+
     # --- Ollama reasoning fallback (cloud API by default - no local model needed) ---
     ollama_enabled: bool = _bool("OLLAMA_ENABLED", True)
     ollama_host: str = os.getenv("OLLAMA_HOST", "https://ollama.com")

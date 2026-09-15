@@ -145,6 +145,14 @@ class Population:
         partner = self.rng.choice(top)
         return Genome.from_dict(partner.genome)
 
+    def council_genomes(self, exclude_id: int) -> list[Genome]:
+        """The current top-fitness alive agents' own genomes (excluding the
+        one asking) - an ensemble "second opinion" panel for an ambiguous
+        signal. See strategy/signals.py::council_consult."""
+        alive = [a for a in self.db.list_alive_agents() if a.id != exclude_id]
+        top = sorted(alive, key=lambda a: a.fitness, reverse=True)[: self.config.council_size]
+        return [Genome.from_dict(a.genome) for a in top]
+
     def handle_win(self, agent_id: int, pnl: float) -> None:
         self.db.record_win(agent_id, pnl)
         agent = self.db.get_agent(agent_id)
