@@ -58,6 +58,8 @@
   .flag.on { color: var(--accent); border-color: rgba(79,140,255,0.4); }
   .side-long { color: var(--green); } .side-short { color: var(--red); }
   .result-win { color: var(--green); } .result-loss { color: var(--red); } .result-open { color: var(--muted); }
+  .regime-trending-up { color: var(--green); } .regime-trending-down { color: var(--red); }
+  .regime-ranging { color: var(--amber); } .regime-unknown { color: var(--muted); }
   .table-scroll { overflow-x: auto; }
   .empty { color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 30px; }
@@ -91,11 +93,23 @@
   </section>
 
   <section>
+    <h2>Performance by Market Regime</h2>
+    <div class="panel table-scroll">
+      <table id="regime-table">
+        <thead><tr><th>Regime</th><th>Closed Trades</th><th>Win Rate</th><th>Total PnL</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <h2>Leaderboard - top 50 by fitness (of up to <span id="lb-cap">500</span> alive)</h2>
     <div class="panel table-scroll">
       <table id="leaderboard-table">
         <thead><tr>
-          <th>ID</th><th>Tier</th><th>Gen</th><th>Flags</th><th>Strategy</th><th>Wins</th><th>Losses</th>
+          <th>ID</th><th>Tier</th><th>Gen</th><th>Flags</th><th>Strategy</th>
+          <th title="% of the agent's own balance risked as notional per trade (paper trading - no real borrowing)">Leverage</th>
+          <th>Wins</th><th>Losses</th>
           <th>Streak</th><th>Trades</th><th>Balance</th><th>Total PnL</th>
         </tr></thead>
         <tbody></tbody>
@@ -109,7 +123,7 @@
       <table id="trades-table">
         <thead><tr>
           <th>Agent</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th>
-          <th>Result</th><th>Reason</th><th>Opened</th>
+          <th>Result</th><th>Regime</th><th>Reason</th><th>Opened</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -162,6 +176,20 @@ function strategySummary(genomeJson) {
   }
 }
 
+// The agent's fixed per-trade risk, expressed the way the user asked to
+// see it - "leverage." Not real borrowed leverage (paper trades only ever
+// risk a slice of the agent's OWN balance, capped 2-15% by genome bounds -
+// see strategy/genome.py BOUNDS.position_size_pct) - this is that same
+// number, just surfaced as its own column instead of buried in the
+// strategy summary sentence.
+function agentLeveragePct(genomeJson) {
+  try {
+    return JSON.parse(genomeJson).position_size_pct;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Full plain-English explanation shown on hover (title attr) - every
 // confirmation this agent's genome checks before it will actually enter,
 // not just the headline EMA/RSI trigger.
@@ -196,14 +224,15 @@ async function section(name, fn) {
 }
 
 async function refresh() {
-  let overview, population, leaderboard, trades, pnlHistory;
+  let overview, population, leaderboard, trades, pnlHistory, regimeStats;
   try {
-    [overview, population, leaderboard, trades, pnlHistory] = await Promise.all([
+    [overview, population, leaderboard, trades, pnlHistory, regimeStats] = await Promise.all([
       fetch('/api/overview').then(r => r.json()),
       fetch('/api/population').then(r => r.json()),
       fetch('/api/leaderboard').then(r => r.json()),
       fetch('/api/trades').then(r => r.json()),
       fetch('/api/pnl_history').then(r => r.json()),
+      fetch('/api/regime_stats').then(r => r.json()),
     ]);
   } catch (e) {
     console.error('dashboard: failed to fetch API data', e);
@@ -265,6 +294,23 @@ async function refresh() {
     }
   });
 
+  section('regime-stats', () => {
+    const order = ["trending-up", "trending-down", "ranging", "unknown"];
+    const labels = { "trending-up": "Trending Up", "trending-down": "Trending Down", "ranging": "Ranging/Choppy", "unknown": "Unknown (pre-upgrade trades)" };
+    const byRegime = Object.fromEntries(regimeStats.map(r => [r.regime, r]));
+    const rows = order
+      .map(key => byRegime[key])
+      .filter(Boolean);
+    const rtBody = document.querySelector('#regime-table tbody');
+    rtBody.innerHTML = rows.length ? rows.map(r => `
+      <tr>
+        <td class="regime-${r.regime}">${labels[r.regime] || r.regime}</td>
+        <td>${r.trades}</td>
+        <td>${pct(r.win_rate)}</td>
+        <td class="${r.total_pnl >= 0 ? 'pos' : 'neg'}">${r.total_pnl >= 0 ? '+' : ''}$${fmt(r.total_pnl)}</td>
+      </tr>`).join('') : '<tr><td colspan="4" class="empty">No closed trades yet</td></tr>';
+  });
+
   section('leaderboard', () => {
     const lbBody = document.querySelector('#leaderboard-table tbody');
     lbBody.innerHTML = leaderboard.length ? leaderboard.map(a => `
@@ -274,10 +320,11 @@ async function refresh() {
         <td>${a.generation}</td>
         <td>${a.is_active_trader ? '<span class="flag on">TRADER</span>' : ''} ${a.is_live_trader ? '<span class="flag on">LIVE</span>' : ''}</td>
         <td title="${strategyExplain(a.genome_json)}" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;">${strategySummary(a.genome_json)}</td>
+        <td>${fmt(agentLeveragePct(a.genome_json), 1)}%</td>
         <td>${a.wins}</td><td>${a.losses}</td><td>${a.win_streak}</td><td>${a.trades_count}</td>
         <td>$${fmt(a.balance)}</td>
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
-      </tr>`).join('') : '<tr><td colspan="11" class="empty">No agents yet</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="12" class="empty">No agents yet</td></tr>';
   });
 
   section('trades', () => {
@@ -305,10 +352,11 @@ async function refresh() {
         <td>${t.exit_price ? fmt(t.exit_price, 4) : '-'}</td>
         <td>${pnlCell}</td>
         <td>${statusCell}</td>
+        <td class="regime-${t.regime || 'unknown'}">${t.regime || '-'}</td>
         <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
         <td>${ago(t.opened_at)}</td>
       </tr>`;
-    }).join('') : '<tr><td colspan="8" class="empty">No trades yet</td></tr>';
+    }).join('') : '<tr><td colspan="9" class="empty">No trades yet</td></tr>';
   });
 
   if (overview.is_live) {

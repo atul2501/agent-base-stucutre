@@ -32,6 +32,8 @@ BOUNDS = {
     "atr_period": (7, 21),
     "min_atr_pct": (0.02, 0.15),             # below this ATR%, market's too dead to bother
     "max_atr_pct": (0.3, 1.2),               # above this ATR%, market's too chaotic to trust
+    "adx_period": (10, 20),
+    "min_adx": (10.0, 30.0),                 # below this ADX, market's ranging/choppy - skip it
     "max_spread_pct": (0.02, 0.15),          # wider than this bid/ask spread = too illiquid
     "vwap_period": (10, 50),
     "vwap_deviation_threshold": (0.1, 1.5),  # % price needs to sit away from VWAP to matter
@@ -73,6 +75,8 @@ class Genome:
     atr_period: int
     min_atr_pct: float
     max_atr_pct: float
+    adx_period: int
+    min_adx: float
     max_spread_pct: float
     vwap_period: int
     vwap_deviation_threshold: float
@@ -137,6 +141,8 @@ class Genome:
             atr_period=int(u("atr_period")),
             min_atr_pct=min_atr_pct,
             max_atr_pct=max_atr_pct,
+            adx_period=int(u("adx_period")),
+            min_adx=round(u("min_adx"), 1),
             max_spread_pct=round(u("max_spread_pct"), 3),
             vwap_period=int(u("vwap_period")),
             vwap_deviation_threshold=round(u("vwap_deviation_threshold"), 2),

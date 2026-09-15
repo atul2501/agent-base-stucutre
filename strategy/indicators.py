@@ -73,6 +73,71 @@ def atr(highs: list[float], lows: list[float], closes: list[float], period: int)
     return out
 
 
+def adx(highs: list[float], lows: list[float], closes: list[float], period: int) -> np.ndarray:
+    """Average Directional Index (Wilder's) - trend STRENGTH, not direction.
+    Low ADX (<~20) means the market is ranging/choppy regardless of which
+    way price is drifting; high ADX means a real trend is underway. Used as
+    a regime gate alongside ATR's volatility gate."""
+    highs = np.asarray(highs, dtype=float)
+    lows = np.asarray(lows, dtype=float)
+    closes = np.asarray(closes, dtype=float)
+    n = len(closes)
+    if n < 2:
+        return np.full(n, 0.0)
+
+    up_move = highs[1:] - highs[:-1]
+    down_move = lows[:-1] - lows[1:]
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    prev_close = closes[:-1]
+    true_range = np.maximum.reduce([
+        highs[1:] - lows[1:],
+        np.abs(highs[1:] - prev_close),
+        np.abs(lows[1:] - prev_close),
+    ])
+
+    m = len(true_range)  # = n - 1
+    if m <= period:
+        return np.full(n, 0.0)
+
+    def _wilder_smooth(series: np.ndarray) -> np.ndarray:
+        out = np.zeros(m)
+        out[period - 1] = series[:period].sum()
+        for i in range(period, m):
+            out[i] = out[i - 1] - (out[i - 1] / period) + series[i]
+        return out
+
+    smoothed_tr = _wilder_smooth(true_range)
+    smoothed_plus_dm = _wilder_smooth(plus_dm)
+    smoothed_minus_dm = _wilder_smooth(minus_dm)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plus_di = np.where(smoothed_tr > 0, 100.0 * smoothed_plus_dm / smoothed_tr, 0.0)
+        minus_di = np.where(smoothed_tr > 0, 100.0 * smoothed_minus_dm / smoothed_tr, 0.0)
+        di_sum = plus_di + minus_di
+        dx = np.where(di_sum > 0, 100.0 * np.abs(plus_di - minus_di) / di_sum, 0.0)
+
+    adx_out = np.zeros(m)
+    start = period - 1 + period  # need `period` DX values before the first ADX average
+    if start >= m:
+        adx_out[period - 1:] = dx[period - 1:].mean() if m > period - 1 else 0.0
+        out = np.zeros(n)
+        out[1:] = adx_out
+        out[:2] = out[2] if n > 2 else 0.0
+        return out
+
+    adx_out[start] = dx[period - 1:start + 1].mean()
+    for i in range(start + 1, m):
+        adx_out[i] = (adx_out[i - 1] * (period - 1) + dx[i]) / period
+    adx_out[:start] = adx_out[start]
+
+    out = np.zeros(n)
+    out[1:] = adx_out
+    out[0] = out[1] if n > 1 else 0.0
+    return out
+
+
 def macd_histogram(closes: list[float], fast_period: int, slow_period: int, signal_period: int) -> np.ndarray:
     """MACD histogram (MACD line minus its signal line) - positive = bullish momentum."""
     macd_line = ema(closes, fast_period) - ema(closes, slow_period)

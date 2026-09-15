@@ -68,6 +68,16 @@ class Config:
     backtest_enabled: bool = _bool("BACKTEST_ENABLED", True)
     backtest_lookback_hours: int = int(os.getenv("BACKTEST_LOOKBACK_HOURS", "360"))
     backtest_candidates: int = int(os.getenv("BACKTEST_CANDIDATES", "5"))
+    # A second, coarser-timeframe backtest window used ONLY to check that a
+    # new candidate genome isn't just tuned to whatever regime happened in
+    # the last few days (backtest_lookback_hours above) - split into several
+    # segments and screened separately so a genome that only works in one
+    # regime (e.g. a strong uptrend) doesn't win by default. Coarser
+    # timeframe (default 1h) so the same ~5000-bar API cap covers months
+    # instead of days. See agents/population.py::_pick_best.
+    backtest_regime_timeframe: str = os.getenv("BACKTEST_REGIME_TIMEFRAME", "1h")
+    backtest_regime_lookback_hours: int = int(os.getenv("BACKTEST_REGIME_LOOKBACK_HOURS", "4000"))
+    backtest_regime_segments: int = int(os.getenv("BACKTEST_REGIME_SEGMENTS", "3"))
     # An agent whose regime filters never admit a trade would otherwise
     # squat a population slot forever (the normal cull only considers agents
     # that have completed >=1 trade). Past this many idle hours, it becomes

@@ -150,6 +150,29 @@ def create_app(config: Config) -> Flask:
             results.append(d)
         return jsonify(results)
 
+    @app.get("/api/regime_stats")
+    def regime_stats():
+        # Swarm-wide aggregate, not per-agent - a per-agent x per-regime
+        # breakdown for up to 500 agents would be an impractically large
+        # table; this answers the actionable question directly: does the
+        # population hold up in every regime, or only one?
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT COALESCE(regime, 'unknown') AS regime,
+                      COUNT(*) AS trades,
+                      SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN result='loss' THEN 1 ELSE 0 END) AS losses,
+                      COALESCE(SUM(pnl), 0) AS total_pnl
+               FROM trades WHERE result IN ('win','loss')
+               GROUP BY regime"""
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["win_rate"] = (d["wins"] / d["trades"]) if d["trades"] else 0.0
+            results.append(d)
+        return jsonify(results)
+
     @app.get("/api/pnl_history")
     def pnl_history():
         conn = get_conn()

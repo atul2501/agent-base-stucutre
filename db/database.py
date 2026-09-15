@@ -73,6 +73,17 @@ class Database:
         with open(SCHEMA_PATH) as f:
             self.conn.executescript(f.read())
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Additive schema changes for existing databases - CREATE TABLE IF
+        NOT EXISTS above is a no-op on a table that already exists, so any
+        new column needs an explicit ALTER here. Keeps old agent/trade
+        history intact instead of requiring --reset."""
+        existing_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(trades)")}
+        if "regime" not in existing_cols:
+            self.conn.execute("ALTER TABLE trades ADD COLUMN regime TEXT")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -216,14 +227,15 @@ class Database:
         stop_loss: float,
         take_profit: float,
         entry_reason: str,
+        regime: str | None = None,
     ) -> int:
         cur = self.conn.execute(
             """INSERT INTO trades
                (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
-                entry_reason, opened_at, result)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                entry_reason, regime, opened_at, result)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
             (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
-             entry_reason, now_iso()),
+             entry_reason, regime, now_iso()),
         )
         self.conn.commit()
         return cur.lastrowid

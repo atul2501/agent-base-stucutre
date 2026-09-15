@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from market.hyperliquid_client import MarketSnapshot
 from strategy.genome import Genome
 from strategy.indicators import (
-    atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap,
+    adx, atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap,
 )
 
 
@@ -42,6 +42,7 @@ class Features:
     funding: float
     premium: float
     atr_pct: float                # ATR as a % of price - volatility regime
+    adx_value: float              # trend STRENGTH (not direction) - low = ranging/choppy
     volume_ratio: float           # latest candle volume / its own recent average
     vwap_deviation_pct: float     # (price - vwap) / vwap * 100
     macd_hist: float
@@ -64,7 +65,7 @@ def _neutral_features(snap: MarketSnapshot) -> Features:
     return Features(
         mid_price=snap.mid_price, ema_fast=snap.mid_price, ema_slow=snap.mid_price,
         trend_up=True, rsi_value=50.0, ob_imbalance=1.0, spread_pct=0.0, oi_change_pct=None,
-        funding=snap.funding, premium=snap.premium, atr_pct=0.0, volume_ratio=1.0,
+        funding=snap.funding, premium=snap.premium, atr_pct=0.0, adx_value=0.0, volume_ratio=1.0,
         vwap_deviation_pct=0.0, macd_hist=0.0, daily_change_pct=0.0,
         bb_percent_b=0.5, stoch_rsi_k=50.0, htf_trend_up=None,
     )
@@ -86,6 +87,21 @@ def compute_htf_trend(htf_candles: list[dict]) -> bool | None:
     return bool(fast[-1] > slow[-1])
 
 
+# Fixed, non-evolved threshold - unlike a genome's own tunable `min_adx`,
+# this is used purely to LABEL a trade's market regime for reporting, so
+# every agent's trades are classified on the same consistent scale
+# regardless of what ADX threshold their own genome happens to trade on.
+_REGIME_ADX_THRESHOLD = 20.0
+
+
+def classify_regime(trend_up: bool, adx_value: float) -> str:
+    """Labels the market condition a trade was opened in, for dashboard
+    reporting only - does not affect entry/exit decisions."""
+    if adx_value < _REGIME_ADX_THRESHOLD:
+        return "ranging"
+    return "trending-up" if trend_up else "trending-down"
+
+
 def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: float | None,
                     htf_trend_up: bool | None = None) -> Features:
     closes = [c["c"] for c in snap.candles]
@@ -94,7 +110,7 @@ def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: flo
     volumes = [c["v"] for c in snap.candles]
 
     min_required = max(
-        genome.ema_slow, genome.rsi_period, genome.atr_period,
+        genome.ema_slow, genome.rsi_period, genome.atr_period, genome.adx_period,
         genome.vwap_period, genome.volume_lookback, genome.bb_period,
         genome.stoch_rsi_period + genome.stoch_k_smooth,
         genome.ema_slow + genome.macd_signal_period,
@@ -106,6 +122,7 @@ def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: flo
     ema_slow_series = ema(closes, genome.ema_slow)
     rsi_series = rsi(closes, genome.rsi_period)
     atr_series = atr(highs, lows, closes, genome.atr_period)
+    adx_series = adx(highs, lows, closes, genome.adx_period)
     macd_series = macd_histogram(closes, genome.ema_fast, genome.ema_slow, genome.macd_signal_period)
     bb_series = bollinger_percent_b(closes, genome.bb_period, genome.bb_std_dev)
     stoch_series = stochastic_rsi(closes, genome.stoch_rsi_period, genome.stoch_rsi_period, genome.stoch_k_smooth)
@@ -146,6 +163,7 @@ def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: flo
         funding=snap.funding,
         premium=snap.premium,
         atr_pct=float(atr_series[-1]) / snap.mid_price * 100.0 if snap.mid_price else 0.0,
+        adx_value=float(adx_series[-1]),
         volume_ratio=volume_ratio,
         vwap_deviation_pct=vwap_deviation_pct,
         macd_hist=float(macd_series[-1]),
@@ -165,6 +183,8 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
         return Signal("hold", 0.0, 0, [f"volatility too low (ATR {f.atr_pct:.3f}% < {genome.min_atr_pct}%)"], ambiguous=False)
     if f.atr_pct > genome.max_atr_pct:
         return Signal("hold", 0.0, 0, [f"volatility too chaotic (ATR {f.atr_pct:.3f}% > {genome.max_atr_pct}%)"], ambiguous=False)
+    if f.adx_value < genome.min_adx:
+        return Signal("hold", 0.0, 0, [f"market ranging/choppy (ADX {f.adx_value:.1f} < {genome.min_adx})"], ambiguous=False)
 
     reasons: list[str] = []
 

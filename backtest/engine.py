@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from strategy.genome import Genome
-from strategy.indicators import atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap
+from strategy.indicators import adx, atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap
 from strategy.signals import Features, evaluate_entry, evaluate_exit
 from trading.paper_executor import close_paper_position, open_paper_position
 
@@ -51,7 +51,7 @@ class BacktestResult:
 
 def _min_required_candles(genome: Genome) -> int:
     return max(
-        genome.ema_slow, genome.rsi_period, genome.atr_period,
+        genome.ema_slow, genome.rsi_period, genome.atr_period, genome.adx_period,
         genome.vwap_period, genome.volume_lookback, genome.bb_period,
         genome.stoch_rsi_period + genome.stoch_k_smooth,
         genome.ema_slow + genome.macd_signal_period,
@@ -66,6 +66,7 @@ class _Series:
     ema_slow: object
     rsi: object
     atr: object
+    adx: object
     macd: object
     bb: object
     stoch: object
@@ -89,6 +90,7 @@ def _precompute(genome: Genome, candles: list[dict], funding_points: list[tuple[
         closes=closes, volumes=volumes,
         ema_fast=ema(closes, genome.ema_fast), ema_slow=ema(closes, genome.ema_slow),
         rsi=rsi(closes, genome.rsi_period), atr=atr(highs, lows, closes, genome.atr_period),
+        adx=adx(highs, lows, closes, genome.adx_period),
         macd=macd_histogram(closes, genome.ema_fast, genome.ema_slow, genome.macd_signal_period),
         bb=bollinger_percent_b(closes, genome.bb_period, genome.bb_std_dev),
         stoch=stochastic_rsi(closes, genome.stoch_rsi_period, genome.stoch_rsi_period, genome.stoch_k_smooth),
@@ -128,6 +130,7 @@ def build_backtest_features(genome: Genome, series: _Series, i: int, ts_ms: int)
         ob_imbalance=1.0, spread_pct=0.0, oi_change_pct=None,  # not available historically
         funding=funding, premium=premium,
         atr_pct=float(series.atr[i]) / price * 100.0 if price else 0.0,
+        adx_value=float(series.adx[i]),
         volume_ratio=volume_ratio, vwap_deviation_pct=vwap_deviation_pct,
         macd_hist=float(series.macd[i]), daily_change_pct=daily_change_pct,
         bb_percent_b=float(series.bb[i]), stoch_rsi_k=float(series.stoch[i]),

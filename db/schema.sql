@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS trades (
     result TEXT NOT NULL DEFAULT 'open',         -- open | win | loss
     entry_reason TEXT,
     exit_reason TEXT,
+    regime TEXT,                                 -- trending-up | trending-down | ranging, at entry
     opened_at TEXT NOT NULL,
     closed_at TEXT,
     FOREIGN KEY (agent_id) REFERENCES agents(id)

@@ -15,7 +15,7 @@ from market.hyperliquid_client import HyperliquidClient, MarketSnapshot
 from agents.population import Population
 from reasoning import ollama_advisor
 from strategy.genome import Genome
-from strategy.signals import build_features, compute_htf_trend, evaluate_entry, evaluate_exit
+from strategy.signals import build_features, classify_regime, compute_htf_trend, evaluate_entry, evaluate_exit
 from trading.live_executor import LiveExecutor
 from trading.paper_executor import close_paper_position, open_paper_position
 
@@ -107,6 +107,7 @@ class Orchestrator:
             self.db.open_trade(
                 agent.id, genome.coin, signal.action, fill_price, size, notional,
                 stop_loss, take_profit, entry_reason="; ".join(signal.reasons),
+                regime=classify_regime(features.trend_up, features.adx_value),
             )
             log.info("Agent %d opened %s %s @ %.4f (confidence=%.2f) - %s",
                       agent.id, signal.action.upper(), genome.coin, fill_price,

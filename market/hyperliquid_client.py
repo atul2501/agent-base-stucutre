@@ -34,18 +34,16 @@ class HyperliquidClient:
         base_url = constants.TESTNET_API_URL if network == "testnet" else constants.MAINNET_API_URL
         self.info = Info(base_url, skip_ws=True)
 
-    def get_snapshot(self, coin: str, timeframe: str, candle_lookback_hours: int = 72) -> MarketSnapshot:
-        meta, ctxs = self.info.meta_and_asset_ctxs()
-        universe = meta["universe"]
-        idx = next((i for i, a in enumerate(universe) if a["name"] == coin), None)
-        if idx is None:
-            raise ValueError(f"Unknown coin on Hyperliquid: {coin}")
-        ctx = ctxs[idx]
-
-        end = int(time.time() * 1000)
-        start = end - candle_lookback_hours * 60 * 60 * 1000
+    def get_candles(self, coin: str, timeframe: str, lookback_hours: int,
+                     end_time_ms: int | None = None) -> list[dict]:
+        """Raw historical candles, oldest -> newest. Factored out of
+        get_snapshot so callers that need an OLDER window (e.g. multi-regime
+        backtest screening - see backtest/engine.py, main.py) can pass an
+        explicit `end_time_ms` instead of always ending "now"."""
+        end = end_time_ms if end_time_ms is not None else int(time.time() * 1000)
+        start = end - lookback_hours * 60 * 60 * 1000
         raw_candles = self.info.candles_snapshot(coin, timeframe, start, end)
-        candles = [
+        return [
             {
                 "t": c["t"],
                 "o": float(c["o"]),
@@ -56,6 +54,16 @@ class HyperliquidClient:
             }
             for c in raw_candles
         ]
+
+    def get_snapshot(self, coin: str, timeframe: str, candle_lookback_hours: int = 72) -> MarketSnapshot:
+        meta, ctxs = self.info.meta_and_asset_ctxs()
+        universe = meta["universe"]
+        idx = next((i for i, a in enumerate(universe) if a["name"] == coin), None)
+        if idx is None:
+            raise ValueError(f"Unknown coin on Hyperliquid: {coin}")
+        ctx = ctxs[idx]
+
+        candles = self.get_candles(coin, timeframe, candle_lookback_hours)
 
         book = self.info.l2_snapshot(coin)
         bid_levels = [{"px": float(l["px"]), "sz": float(l["sz"])} for l in book["levels"][0]]

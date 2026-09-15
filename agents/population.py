@@ -53,12 +53,20 @@ def _family(genome: Genome) -> str:
 class Population:
     def __init__(self, db: Database, config: Config, rng: random.Random | None = None,
                  backtest_candles: list[dict] | None = None,
-                 backtest_funding: list[tuple[int, float, float]] | None = None):
+                 backtest_funding: list[tuple[int, float, float]] | None = None,
+                 regime_windows: list[tuple[list[dict], list[tuple[int, float, float]]]] | None = None):
         self.db = db
         self.config = config
         self.rng = rng or random.Random()
         self.backtest_candles = backtest_candles
         self.backtest_funding = backtest_funding or []
+        # Several separate, non-overlapping older historical windows (see
+        # main.py) each covering a different market regime - used alongside
+        # backtest_candles (the recent-window score) so a candidate genome
+        # that only works in whatever regime just happened doesn't win by
+        # default. Empty/omitted falls back to today's single-window-only
+        # behavior (e.g. the extra fetch failed, or in tests).
+        self.regime_windows = regime_windows or []
 
     def _pick_best(self, candidates: list[Genome]) -> Genome:
         """Backtest each candidate genome against real recent history and
@@ -71,10 +79,28 @@ class Population:
         for genome in candidates:
             result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
                                       starting_balance=self.config.starting_paper_balance)
-            score = fitness_score(result)
+            score = fitness_score(result) + self._regime_consistency_score(genome)
             if best_score is None or score > best_score:
                 best_genome, best_score = genome, score
         return best_genome
+
+    def _regime_consistency_score(self, genome: Genome) -> float:
+        """Backtests one genome across every historical regime segment and
+        combines the scores to reward consistency, not just a high average -
+        `mean - 0.5*(mean - worst)` explicitly penalizes a genome that only
+        excels in one segment and craters in another, which a plain average
+        would hide. Returns 0.0 (neutral - no effect on ranking) if no
+        regime windows were supplied."""
+        if not self.regime_windows:
+            return 0.0
+        scores = [
+            fitness_score(backtest_genome(genome, candles, funding,
+                                           starting_balance=self.config.starting_paper_balance))
+            for candles, funding in self.regime_windows
+        ]
+        mean_score = sum(scores) / len(scores)
+        worst_score = min(scores)
+        return mean_score - 0.5 * (mean_score - worst_score)
 
     # ---- seeding ----
 

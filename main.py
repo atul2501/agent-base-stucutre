@@ -149,6 +149,7 @@ def main() -> None:
                 log.exception("Failed to initialize live executor - falling back to paper for this run")
 
         backtest_candles, backtest_funding = [], []
+        regime_windows: list[tuple[list[dict], list[tuple[int, float, float]]]] = []
         if CONFIG.backtest_enabled:
             try:
                 backtest_snap = hl.get_snapshot(CONFIG.token, CONFIG.timeframe,
@@ -161,7 +162,27 @@ def main() -> None:
                 log.exception("Failed to fetch historical data for backtest pre-screening - "
                                "new agents will be born from unscreened random/mutated genomes this run")
 
-        population = Population(db, CONFIG, backtest_candles=backtest_candles, backtest_funding=backtest_funding)
+            try:
+                regime_candles = hl.get_candles(CONFIG.token, CONFIG.backtest_regime_timeframe,
+                                                 CONFIG.backtest_regime_lookback_hours)
+                regime_funding_all = hl.get_funding_history(CONFIG.token, CONFIG.backtest_regime_lookback_hours)
+                segments = CONFIG.backtest_regime_segments
+                seg_len = max(1, len(regime_candles) // segments)
+                for i in range(segments):
+                    seg_candles = regime_candles[i * seg_len: (i + 1) * seg_len if i < segments - 1 else len(regime_candles)]
+                    if len(seg_candles) < 50:
+                        continue
+                    lo_ms, hi_ms = seg_candles[0]["t"], seg_candles[-1]["t"]
+                    seg_funding = [f for f in regime_funding_all if lo_ms <= f[0] <= hi_ms]
+                    regime_windows.append((seg_candles, seg_funding))
+                log.info("Multi-regime backtest screening ready: %d segments from %d %s candles",
+                          len(regime_windows), len(regime_candles), CONFIG.backtest_regime_timeframe)
+            except Exception:
+                log.exception("Failed to fetch multi-regime backtest data - new agents will be "
+                               "screened against the recent window only this run")
+
+        population = Population(db, CONFIG, backtest_candles=backtest_candles, backtest_funding=backtest_funding,
+                                 regime_windows=regime_windows)
         population.seed_if_empty()
         orchestrator = Orchestrator(db, hl, population, CONFIG, live=live_executor)
 
