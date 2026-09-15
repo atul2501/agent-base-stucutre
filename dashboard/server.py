@@ -271,6 +271,84 @@ def create_app(config: Config) -> Flask:
             "open_short": short_n,
         })
 
+    @app.get("/api/win_rate_trend")
+    def win_rate_trend():
+        # Daily buckets (by close date, UTC) rather than by population cycle -
+        # trades don't map cleanly to a single cycle number, but every trade
+        # has a real closed_at timestamp. Shows whether the swarm's edge is
+        # improving, flat, or decaying over time, not just one all-time number.
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT date(closed_at) AS day,
+                      COUNT(*) AS trades,
+                      SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) AS wins
+               FROM trades WHERE result IN ('win','loss') AND closed_at IS NOT NULL
+               GROUP BY day ORDER BY day"""
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["win_rate"] = (d["wins"] / d["trades"]) if d["trades"] else 0.0
+            results.append(d)
+        return jsonify(results)
+
+    @app.get("/api/trade_duration_histogram")
+    def trade_duration_histogram():
+        # Fixed hour buckets - shows whether exits are mostly fast TP/SL hits
+        # or mostly riding out to max_hold_hours.
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT (julianday(closed_at) - julianday(opened_at)) * 24.0 AS hours
+               FROM trades WHERE result IN ('win','loss') AND closed_at IS NOT NULL"""
+        ).fetchall()
+        bins = [(0, 0.5, "0-30m"), (0.5, 1, "30m-1h"), (1, 4, "1-4h"),
+                (4, 12, "4-12h"), (12, 24, "12-24h"), (24, 48, "24-48h"),
+                (48, float("inf"), "48h+")]
+        counts = {label: 0 for _, _, label in bins}
+        for r in rows:
+            h = r["hours"]
+            if h is None:
+                continue
+            for lo, hi, label in bins:
+                if lo <= h < hi:
+                    counts[label] += 1
+                    break
+        return jsonify([{"bucket": label, "count": counts[label]} for _, _, label in bins])
+
+    @app.get("/api/lifespan_histogram")
+    def lifespan_histogram():
+        # How many trades an agent completed before its do-or-die loss -
+        # only DEAD agents (an alive agent's lifespan isn't over yet). A
+        # dead agent's trades_count is always its win streak + 1 final loss.
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT trades_count FROM agents WHERE status = 'dead'"
+        ).fetchall()
+        bins = [(0, 1, "1st trade"), (1, 2, "1 win"),
+                (2, 3, "2 wins"), (3, 5, "3-4 wins"),
+                (5, 10, "5-9 wins"), (10, float("inf"), "10+ wins")]
+        counts = {label: 0 for _, _, label in bins}
+        for r in rows:
+            n = r["trades_count"]
+            for lo, hi, label in bins:
+                if lo <= n < hi:
+                    counts[label] += 1
+                    break
+        return jsonify([{"bucket": label, "count": counts[label]} for _, _, label in bins])
+
+    @app.get("/api/generation_depth")
+    def generation_depth():
+        # Currently-alive agents by generation number - shows whether
+        # evolution is actually producing deep lineages or mostly staying
+        # shallow (e.g. constant floor-refills at generation 0 outpacing
+        # winners' children surviving to reproduce further).
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT generation, COUNT(*) AS count FROM agents WHERE status='alive' "
+            "GROUP BY generation ORDER BY generation"
+        ).fetchall()
+        return jsonify([_row_to_dict(r) for r in rows])
+
     @app.get("/api/pnl_history")
     def pnl_history():
         conn = get_conn()

@@ -119,6 +119,55 @@
   </section>
 
   <section>
+    <h2 title="Decline from the highest swarm-wide realized PnL seen so far - the 'underwater' view that pairs with the live circuit breaker's drawdown trip">Drawdown from Peak</h2>
+    <div class="panel">
+      <div class="viz-legend" id="drawdown-legend"></div>
+      <div class="chart-wrap">
+        <svg id="drawdownChart" role="img" aria-label="Drawdown from peak realized PnL"></svg>
+        <div class="viz-tooltip" id="drawdown-tooltip"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Win Rate Trend</h2>
+    <div class="panel">
+      <div class="viz-legend" id="winrate-legend"></div>
+      <div class="chart-wrap">
+        <svg id="winrateChart" role="img" aria-label="Daily win rate trend"></svg>
+        <div class="viz-tooltip" id="winrate-tooltip"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 title="How long trades actually stay open before closing - fast TP/SL hits vs riding out to max_hold_hours">Trade Duration</h2>
+    <div class="panel">
+      <div class="chart-wrap" style="height:200px;">
+        <svg id="durationChart" role="img" aria-label="Trade duration histogram"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 title="How many trades a dead agent completed before its do-or-die loss - only agents that have actually died, since a still-alive agent's lifespan isn't over yet">Agent Lifespan</h2>
+    <div class="panel">
+      <div class="chart-wrap" style="height:200px;">
+        <svg id="lifespanChart" role="img" aria-label="Agent lifespan histogram"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 title="Currently-alive agents by generation number - shows whether evolution is producing deep lineages or mostly staying shallow">Generation Depth</h2>
+    <div class="panel">
+      <div class="chart-wrap" style="height:200px;">
+        <svg id="generationChart" role="img" aria-label="Alive agents by generation"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section>
     <h2>Agent Fear &amp; Greed Index</h2>
     <div class="panel gauge-wrap">
       <div class="gauge-svg-box">
@@ -259,7 +308,7 @@ function renderLineChart(svg, legendEl, cycles, series, formatValue = dollarFmt)
     ? [...new Set([0, Math.floor((cycles.length - 1) / 2), cycles.length - 1])]
     : [0];
   labelIdxs.forEach(i => {
-    out += `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="10" fill="#8b93a7">c${cycles[i]}</text>`;
+    out += `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="10" fill="#8b93a7">${cycles[i]}</text>`;
   });
 
   series.forEach(s => {
@@ -294,7 +343,7 @@ function attachChartHover(svg, tooltipEl) {
     const lines = series.map(s =>
       `<span class="swatch" style="background:${s.color}"></span>${s.label}: <b>${formatValue(s.values[idx])}</b>`
     ).join('<br>');
-    tooltipEl.innerHTML = `c${cycles[idx]}<br>${lines}`;
+    tooltipEl.innerHTML = `${cycles[idx]}<br>${lines}`;
     tooltipEl.style.display = '';
     tooltipEl.style.left = Math.min(cx + 10, wrap.clientWidth - tooltipEl.offsetWidth - 4) + 'px';
     tooltipEl.style.top = '4px';
@@ -307,6 +356,8 @@ function attachChartHover(svg, tooltipEl) {
 }
 attachChartHover(document.getElementById('pnlChart'), document.getElementById('pnl-tooltip'));
 attachChartHover(document.getElementById('popChart'), document.getElementById('pop-tooltip'));
+attachChartHover(document.getElementById('drawdownChart'), document.getElementById('drawdown-tooltip'));
+attachChartHover(document.getElementById('winrateChart'), document.getElementById('winrate-tooltip'));
 
 // Half-donut "Fear & Greed" gauge - a semicircle swept from 180deg (left,
 // index=0) to 0deg (right, index=100), same polar-to-cartesian math either
@@ -353,6 +404,50 @@ function renderGauge(svg, valueEl, labelEl, index, label) {
   labelEl.textContent = label;
   const band = GAUGE_BANDS.find(([v1, v2]) => index >= v1 && index <= v2) || GAUGE_BANDS[2];
   labelEl.style.color = band[2];
+}
+
+// Dependency-free inline SVG bar chart - single series, categorical x-axis
+// (a histogram bucket, a generation number, etc.), reused by the trade
+// duration / agent lifespan / generation depth charts below. Same
+// no-external-CDN reasoning as renderLineChart.
+function renderBarChart(svg, labels, values, color, formatValue = countFmt) {
+  const w = svg.clientWidth || 600, h = svg.clientHeight || 200;
+  const padL = 40, padR = 10, padT = 10, padB = 28;
+  const plotW = Math.max(1, w - padL - padR), plotH = Math.max(1, h - padT - padB);
+
+  if (!labels.length || values.every(v => !v)) {
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.innerHTML = `<text x="${w/2}" y="${h/2}" text-anchor="middle" fill="#8b93a7" font-size="13">No data yet</text>`;
+    return;
+  }
+
+  const maxV = Math.max(1, ...values);
+  const n = labels.length;
+  const gap = 8;
+  const barW = Math.max(4, (plotW - gap * (n - 1)) / n);
+  const yAt = v => padT + plotH - (v / maxV) * plotH;
+
+  let out = '';
+  const gridN = 4;
+  for (let i = 0; i <= gridN; i++) {
+    const v = maxV * (i / gridN);
+    const gy = yAt(v);
+    out += `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${w - padR}" y2="${gy.toFixed(1)}" stroke="#232838" stroke-width="1"/>`;
+    out += `<text x="${padL - 6}" y="${(gy + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#8b93a7">${fmt(v, 0)}</text>`;
+  }
+
+  labels.forEach((label, i) => {
+    const x = padL + i * (barW + gap);
+    const v = values[i] || 0;
+    const y = yAt(v);
+    out += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" `
+         + `height="${(padT + plotH - y).toFixed(1)}" fill="${color}" rx="2">`
+         + `<title>${label}: ${formatValue(v)}</title></rect>`;
+    out += `<text x="${(x + barW / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle" font-size="9" fill="#8b93a7">${label}</text>`;
+  });
+
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.innerHTML = out;
 }
 
 function ollamaBadge(status) {
@@ -459,6 +554,7 @@ async function section(name, fn) {
 const lastGood = {
   overview: null, population: null, leaderboard: [],
   tradesResp: { trades: [], total: 0 }, pnlHistory: [], regimeStats: [], sentiment: null,
+  winRateTrend: [], durationHistogram: [], lifespanHistogram: [], generationDepth: [],
 };
 let lastRefreshOk = false;
 let lastRefreshAt = null;
@@ -478,6 +574,10 @@ async function refresh() {
     pnlHistory: '/api/pnl_history',
     regimeStats: '/api/regime_stats',
     sentiment: '/api/sentiment',
+    winRateTrend: '/api/win_rate_trend',
+    durationHistogram: '/api/trade_duration_histogram',
+    lifespanHistogram: '/api/lifespan_histogram',
+    generationDepth: '/api/generation_depth',
   };
   const keys = Object.keys(endpoints);
   const results = await Promise.allSettled(keys.map(k => fetchJson(endpoints[k])));
@@ -502,6 +602,10 @@ async function refresh() {
   const pnlHistory = lastGood.pnlHistory;
   const regimeStats = lastGood.regimeStats;
   const sentiment = lastGood.sentiment;
+  const winRateTrend = lastGood.winRateTrend;
+  const durationHistogram = lastGood.durationHistogram;
+  const lifespanHistogram = lastGood.lifespanHistogram;
+  const generationDepth = lastGood.generationDepth;
   if (!overview || !population) return; // nothing successfully loaded yet at all
 
   const trades = tradesResp.trades || [];
@@ -555,7 +659,7 @@ async function refresh() {
   });
 
   section('pnl-chart', () => {
-    const cycles = pnlHistory.map(r => r.cycle);
+    const cycles = pnlHistory.map(r => 'c' + r.cycle);
     const series = [
       { label: 'Swarm total realized PnL', color: PNL_SERIES_COLORS[0],
         values: pnlHistory.map(r => r.total_realized_pnl) },
@@ -571,13 +675,62 @@ async function refresh() {
     // allowed to open positions right now), and professional-tier count
     // (proven, self-sustaining lineages), all per cycle from the same
     // population_cycles history the PnL chart above already uses.
-    const cycles = pnlHistory.map(r => r.cycle);
+    const cycles = pnlHistory.map(r => 'c' + r.cycle);
     const series = [
       { label: 'Alive agents', color: PNL_SERIES_COLORS[0], values: pnlHistory.map(r => r.alive_count) },
       { label: 'Active traders', color: PNL_SERIES_COLORS[1], values: pnlHistory.map(r => r.active_trader_count) },
       { label: 'Professional tier', color: PNL_SERIES_COLORS[2], values: pnlHistory.map(r => r.professional_count) },
     ];
     renderLineChart(document.getElementById('popChart'), document.getElementById('pop-legend'), cycles, series, countFmt);
+  });
+
+  section('drawdown-chart', () => {
+    // Running peak of swarm-wide realized PnL vs current - the "underwater"
+    // view. Pairs with the live circuit breaker's own drawdown trip, but
+    // this is realized-PnL-based (works in paper mode too), not real
+    // account equity (that's live-only - see engine/orchestrator.py).
+    const cycles = pnlHistory.map(r => 'c' + r.cycle);
+    let peak = -Infinity;
+    const drawdown = pnlHistory.map(r => {
+      const v = r.total_realized_pnl || 0;
+      peak = Math.max(peak, v);
+      return v - peak; // always <= 0
+    });
+    const series = [{ label: 'Drawdown from peak realized PnL', color: '#ef5a6f', values: drawdown }];
+    renderLineChart(document.getElementById('drawdownChart'), document.getElementById('drawdown-legend'), cycles, series, dollarFmt);
+  });
+
+  section('winrate-chart', () => {
+    // Daily win rate, not just one all-time number - shows whether the
+    // swarm's edge is improving, flat, or decaying.
+    const days = winRateTrend.map(r => r.day.slice(5)); // MM-DD, year rarely needed here
+    const series = [{ label: 'Daily win rate', color: PNL_SERIES_COLORS[0],
+                       values: winRateTrend.map(r => r.win_rate * 100) }];
+    renderLineChart(document.getElementById('winrateChart'), document.getElementById('winrate-legend'), days, series, v => pct(v/100));
+  });
+
+  section('duration-chart', () => {
+    renderBarChart(
+      document.getElementById('durationChart'),
+      durationHistogram.map(r => r.bucket), durationHistogram.map(r => r.count),
+      PNL_SERIES_COLORS[0],
+    );
+  });
+
+  section('lifespan-chart', () => {
+    renderBarChart(
+      document.getElementById('lifespanChart'),
+      lifespanHistogram.map(r => r.bucket), lifespanHistogram.map(r => r.count),
+      "#ef5a6f",
+    );
+  });
+
+  section('generation-chart', () => {
+    renderBarChart(
+      document.getElementById('generationChart'),
+      generationDepth.map(r => 'gen ' + r.generation), generationDepth.map(r => r.count),
+      PNL_SERIES_COLORS[2],
+    );
   });
 
   section('gauge', () => {
