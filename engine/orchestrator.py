@@ -175,6 +175,10 @@ class Orchestrator:
 
         self.db.record_population_cycle(self.cycle, **stats)
         self.prev_open_interest = snap.open_interest
+        # Lets the dashboard show unrealized PnL on open trades instead of a
+        # blank "-" for however long a position stays open (max_hold_hours
+        # can be up to 96h) - see dashboard/server.py's /api/trades.
+        self.db.set_meta("last_price", str(snap.mid_price))
 
         log.info(
             "Cycle %d done | %s | alive=%d active_traders=%d professional=%d best_agent=%s best_pnl=%s",

@@ -258,17 +258,33 @@ async function refresh() {
 
   section('trades', () => {
     const trBody = document.querySelector('#trades-table tbody');
-    trBody.innerHTML = trades.length ? trades.map(t => `
+    trBody.innerHTML = trades.length ? trades.map(t => {
+      let pnlCell, statusCell;
+      if (t.pnl !== null) {
+        // Closed - the real, final result: WIN (green) or LOSS (red).
+        pnlCell = `<span class="${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl >= 0 ? '+' : ''}$${fmt(t.pnl)}</span>`;
+        statusCell = `<span class="result-${t.result}">${t.result.toUpperCase()}</span>`;
+      } else if (t.unrealized_pnl !== null && t.unrealized_pnl !== undefined) {
+        // Still open - live/unrealized: how much it's currently made or lost, right now.
+        const up = t.unrealized_pnl >= 0;
+        pnlCell = `<span class="${up ? 'pos' : 'neg'}" title="unrealized - position still open">~${up ? '+' : ''}$${fmt(t.unrealized_pnl)}</span>`;
+        statusCell = `<span class="result-open ${up ? 'pos' : 'neg'}">OPEN &middot; ${up ? 'UP' : 'DOWN'} ${up ? '▲' : '▼'}</span>`;
+      } else {
+        pnlCell = '-';
+        statusCell = `<span class="result-open">${t.result}</span>`;
+      }
+      return `
       <tr>
         <td>#${t.agent_id}</td>
         <td class="side-${t.side}">${t.side.toUpperCase()}</td>
         <td>${fmt(t.entry_price, 4)}</td>
         <td>${t.exit_price ? fmt(t.exit_price, 4) : '-'}</td>
-        <td class="${(t.pnl||0) >= 0 ? 'pos' : 'neg'}">${t.pnl !== null ? ((t.pnl>=0?'+':'')+'$'+fmt(t.pnl)) : '-'}</td>
-        <td class="result-${t.result}">${t.result}</td>
+        <td>${pnlCell}</td>
+        <td>${statusCell}</td>
         <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
         <td>${ago(t.opened_at)}</td>
-      </tr>`).join('') : '<tr><td colspan="8" class="empty">No trades yet</td></tr>';
+      </tr>`;
+    }).join('') : '<tr><td colspan="8" class="empty">No trades yet</td></tr>';
   });
 
   if (overview.is_live) {

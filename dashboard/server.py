@@ -129,7 +129,26 @@ def create_app(config: Config) -> Flask:
         rows = conn.execute(
             "SELECT * FROM trades ORDER BY id DESC LIMIT 50"
         ).fetchall()
-        return jsonify([_row_to_dict(r) for r in rows])
+        last_price_row = conn.execute("SELECT value FROM meta WHERE key = 'last_price'").fetchone()
+        last_price = float(last_price_row["value"]) if last_price_row else None
+
+        results = []
+        for r in rows:
+            d = _row_to_dict(r)
+            # Open trades have pnl=None until they actually close (win/loss)
+            # - without this, a position can sit open for hours (max_hold_hours
+            # up to 96h) with zero visibility into whether it's winning or
+            # losing right now. Mark-to-market estimate only, not the fill
+            # price a real close would get (see trading/paper_executor.py).
+            if d["result"] == "open" and last_price is not None:
+                if d["side"] == "long":
+                    d["unrealized_pnl"] = (last_price - d["entry_price"]) * d["size"]
+                else:
+                    d["unrealized_pnl"] = (d["entry_price"] - last_price) * d["size"]
+            else:
+                d["unrealized_pnl"] = None
+            results.append(d)
+        return jsonify(results)
 
     @app.get("/api/pnl_history")
     def pnl_history():
