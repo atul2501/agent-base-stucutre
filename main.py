@@ -68,6 +68,13 @@ def parse_args() -> argparse.Namespace:
              "(step 0). Required when switching TOKEN to a different asset.",
     )
     parser.add_argument("--no-dashboard", action="store_true", help="Don't start the web dashboard.")
+    parser.add_argument(
+        "--clear-live-breaker", action="store_true",
+        help="Clear a tripped live-trading circuit breaker (drawdown or stale-feed trip - "
+             "see engine/orchestrator.py) and resume live trading. Investigate the reason "
+             "logged at trip time BEFORE clearing this - it does not re-arm automatically "
+             "by design. Exits immediately after clearing; does not start the trading loop.",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +138,20 @@ def main() -> None:
         log.info("=" * 70)
 
         db = Database(CONFIG.db_path)
+
+        if args.clear_live_breaker:
+            if db.get_meta("live_breaker_tripped") != "1":
+                log.info("Live circuit breaker is not currently tripped - nothing to clear.")
+            else:
+                reason = db.get_meta("live_breaker_reason") or "unknown"
+                log.warning("Clearing live circuit breaker (was tripped: %s)", reason)
+                db.set_meta("live_breaker_tripped", "0")
+                db.set_meta("live_breaker_reason", "")
+                db.set_meta("live_peak_equity", "")
+                log.info("Cleared. Live trading will resume from the next run of `python3 main.py` "
+                         "(without --clear-live-breaker) if TRADING_MODE=live.")
+            return
+
         enforce_single_token_guard(db, args.reset)
 
         hl = HyperliquidClient(network="mainnet" if CONFIG.hl_network == "mainnet" else "testnet")

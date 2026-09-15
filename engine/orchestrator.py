@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from config import Config
-from db.database import Database
+from db.database import Database, now_iso
 from market.hyperliquid_client import HyperliquidClient, MarketSnapshot
 from agents.population import Population
 from reasoning import ollama_advisor
@@ -35,6 +35,13 @@ class Orchestrator:
         self.prev_open_interest: float | None = None
         self.htf_trend_up: bool | None = None
         self.cycle = 0
+        # Circuit breaker staleness tracking - deliberately in-memory only
+        # (not persisted), so a restart gives the price feed a fresh chance
+        # rather than carrying over a stale count from before a deploy/
+        # restart. The TRIP itself (once it happens) IS persisted - see
+        # _check_circuit_breaker.
+        self._last_seen_price: float | None = None
+        self._stale_price_count = 0
 
     def _fetch_snapshot(self) -> MarketSnapshot | None:
         try:
@@ -120,6 +127,83 @@ class Orchestrator:
             log.info("Agent %d opened %s %s @ %.4f (confidence=%.2f) - %s",
                       agent.id, signal.action.upper(), genome.coin, fill_price,
                       signal.confidence, signal.reasons[0] if signal.reasons else "")
+
+    def _is_breaker_tripped(self) -> bool:
+        return self.db.get_meta("live_breaker_tripped") == "1"
+
+    def _trip_circuit_breaker(self, reason: str, snap: MarketSnapshot) -> None:
+        """The one safeguard that protects real money rather than just
+        improving statistical confidence. Flattens the real position
+        immediately and persists the trip so it survives a restart - live
+        trading stays paused until a human runs
+        `python3 main.py --clear-live-breaker`, not just until conditions
+        look better again."""
+        log.critical(
+            "LIVE CIRCUIT BREAKER TRIPPED: %s - flattening real position and pausing live "
+            "trading until explicitly cleared with `python3 main.py --clear-live-breaker`",
+            reason,
+        )
+        self.db.set_meta("live_breaker_tripped", "1")
+        self.db.set_meta("live_breaker_reason", reason)
+        self.db.set_meta("live_breaker_tripped_at", now_iso())
+        if self.live is not None:
+            try:
+                results = self.live.adjust_to(self.config.token, None, 0.0, snap.sz_decimals)
+                for r in results:
+                    self.db.record_live_order(self.config.token, r["action"], r["side"],
+                                               0.0, r["fill_price"], r["status"], r["detail"])
+                self.db.set_live_position(self.config.token, None, 0.0, 0.0)
+            except Exception:
+                log.exception("Circuit breaker flatten order failed - live position may "
+                               "still be open, check the exchange directly")
+
+    def _check_circuit_breaker(self, snap: MarketSnapshot) -> bool:
+        """Returns True if live trading should stay paused this cycle -
+        either already tripped, or trips right now on drawdown or a frozen
+        price feed. Paper trading and the evolutionary population are never
+        affected by this; only the real aggregate live position is."""
+        if self.live is None or not self.config.live_circuit_breaker_enabled:
+            return False
+
+        if self._is_breaker_tripped():
+            reason = self.db.get_meta("live_breaker_reason") or "unknown"
+            log.warning("Live circuit breaker still tripped (%s) - live trading paused. "
+                        "Clear it explicitly with `python3 main.py --clear-live-breaker` once resolved.", reason)
+            return True
+
+        # Stale/frozen price feed: more dangerous than a merely quiet market -
+        # trading decisions this cycle would be based on data that isn't real.
+        if self._last_seen_price is not None and snap.mid_price == self._last_seen_price:
+            self._stale_price_count += 1
+        else:
+            self._stale_price_count = 0
+        self._last_seen_price = snap.mid_price
+        if self._stale_price_count >= self.config.live_stale_price_cycles:
+            self._trip_circuit_breaker(
+                f"price feed unchanged ({snap.mid_price}) for {self._stale_price_count} "
+                "consecutive cycles - possible broken/frozen feed",
+                snap,
+            )
+            return True
+
+        # Drawdown from peak account equity since the breaker was last
+        # cleared. A None equity read (transient API failure) is skipped,
+        # not treated as a drawdown - never trip on our own inability to ask.
+        equity = self.live.get_account_equity()
+        if equity is not None:
+            peak_raw = self.db.get_meta("live_peak_equity")
+            peak = max(float(peak_raw), equity) if peak_raw else equity
+            self.db.set_meta("live_peak_equity", str(peak))
+            if peak > 0:
+                drawdown_pct = (peak - equity) / peak * 100.0
+                if drawdown_pct >= self.config.live_max_drawdown_pct:
+                    self._trip_circuit_breaker(
+                        f"drawdown {drawdown_pct:.1f}% from peak equity ${peak:.2f} (current ${equity:.2f})",
+                        snap,
+                    )
+                    return True
+
+        return False
 
     def _sync_live_exposure(self, snap: MarketSnapshot) -> None:
         """Real money mirror of the paper population's consensus. Only the
@@ -210,7 +294,8 @@ class Orchestrator:
         self.population.refill_if_below_floor()
         stats = self.population.rank_and_enforce()
         self._process_entries(snap)
-        self._sync_live_exposure(snap)
+        if not self._check_circuit_breaker(snap):
+            self._sync_live_exposure(snap)
 
         self.db.record_population_cycle(self.cycle, **stats)
         self.prev_open_interest = snap.open_interest

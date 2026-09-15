@@ -74,6 +74,8 @@
     <div class="badges" id="badges"></div>
   </header>
 
+  <div id="breaker-banner" style="display:none; margin-bottom:20px; padding:14px 18px; border-radius:10px; background:rgba(239,90,111,0.12); border:1px solid var(--red); color:var(--red); font-weight:600;"></div>
+
   <div class="grid" id="stat-cards"></div>
 
   <section>
@@ -280,6 +282,16 @@ async function refresh() {
     badges.push(ollamaBadge(overview.ollama));
     badges.push(`<span class="badge">Cycle ${overview.last_cycle ? overview.last_cycle.cycle : 0} &middot; ${overview.last_cycle ? ago(overview.last_cycle.ran_at) : 'not started'}</span>`);
     document.getElementById('badges').innerHTML = badges.join('');
+
+    const banner = document.getElementById('breaker-banner');
+    if (overview.live_breaker_tripped) {
+      banner.style.display = '';
+      banner.innerHTML = `&#9888; LIVE CIRCUIT BREAKER TRIPPED (${ago(overview.live_breaker_tripped_at)}): `
+        + `${overview.live_breaker_reason || 'unknown reason'} &mdash; real position was flattened and live `
+        + `trading is PAUSED. Investigate, then run <code>python3 main.py --clear-live-breaker</code> to resume.`;
+    } else {
+      banner.style.display = 'none';
+    }
   });
 
   section('stat-cards', () => {

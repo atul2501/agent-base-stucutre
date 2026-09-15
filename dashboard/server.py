@@ -54,6 +54,11 @@ def create_app(config: Config) -> Flask:
         last_cycle = conn.execute(
             "SELECT cycle, ran_at FROM population_cycles ORDER BY id DESC LIMIT 1"
         ).fetchone()
+        breaker_row = conn.execute(
+            "SELECT key, value FROM meta WHERE key IN "
+            "('live_breaker_tripped', 'live_breaker_reason', 'live_breaker_tripped_at')"
+        ).fetchall()
+        breaker_meta = {r["key"]: r["value"] for r in breaker_row}
         return jsonify({
             "token": config.token,
             "timeframe": config.timeframe,
@@ -68,6 +73,9 @@ def create_app(config: Config) -> Flask:
             "live_max_leverage": config.live_max_leverage,
             "revalidation_enabled": config.revalidation_enabled,
             "revalidation_drift_threshold": config.revalidation_drift_threshold,
+            "live_breaker_tripped": breaker_meta.get("live_breaker_tripped") == "1",
+            "live_breaker_reason": breaker_meta.get("live_breaker_reason") or None,
+            "live_breaker_tripped_at": breaker_meta.get("live_breaker_tripped_at") or None,
             "ollama": ollama_advisor.get_status(),
             "last_cycle": _row_to_dict(last_cycle) if last_cycle else None,
             "server_time": time.time(),

@@ -46,6 +46,19 @@ class LiveExecutor:
         self._leverage_set_for.add(coin)
         log.info("Live leverage set to %dx cross for %s", self.config.live_max_leverage, coin)
 
+    def get_account_equity(self) -> float | None:
+        """Ground-truth total account value from the exchange (margin
+        summary), used by the live circuit breaker to measure drawdown
+        against - see engine/orchestrator.py. Returns None if the API call
+        fails, so a transient network hiccup can't be mistaken for a real
+        drawdown."""
+        try:
+            state = self.info.user_state(self.address)
+            return float(state["marginSummary"]["accountValue"])
+        except Exception as e:
+            log.warning("Failed to fetch live account equity: %s", e)
+            return None
+
     def get_actual_position(self, coin: str) -> tuple[str | None, float]:
         """Ground truth from the exchange itself - always reconcile against
         this rather than trusting our own bookkeeping, in case of manual

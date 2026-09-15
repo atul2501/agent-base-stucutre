@@ -49,6 +49,18 @@ class Config:
     live_max_total_notional_usd: float = float(os.getenv("LIVE_MAX_TOTAL_NOTIONAL_USD", "100"))
     live_active_trader_count: int = int(os.getenv("LIVE_ACTIVE_TRADER_COUNT", "20"))
     live_max_leverage: int = int(os.getenv("LIVE_MAX_LEVERAGE", "5"))
+    # Circuit breaker: the one safeguard that actually protects real money
+    # rather than just improving long-run statistical confidence. Trips on
+    # EITHER a drawdown past this % from the peak account equity seen since
+    # the breaker was last cleared, OR the price feed reporting the exact
+    # same mid-price for this many consecutive cycles (a frozen/broken feed
+    # is more dangerous than a merely-quiet market). On trip: the real
+    # position is flattened immediately and live trading stays paused - not
+    # just until conditions improve - until a human explicitly clears it
+    # with `python3 main.py --clear-live-breaker`. See engine/orchestrator.py.
+    live_circuit_breaker_enabled: bool = _bool("LIVE_CIRCUIT_BREAKER_ENABLED", True)
+    live_max_drawdown_pct: float = float(os.getenv("LIVE_MAX_DRAWDOWN_PCT", "20.0"))
+    live_stale_price_cycles: int = int(os.getenv("LIVE_STALE_PRICE_CYCLES", "5"))
 
     # --- population / evolution ---
     population_cap: int = int(os.getenv("POPULATION_CAP", "500"))
