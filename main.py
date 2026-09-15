@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import faulthandler
+import json
 import logging
 import signal
 import sys
@@ -34,7 +35,7 @@ from pathlib import Path
 faulthandler.enable()  # print a native stack trace instead of a silent segfault
 
 from config import CONFIG
-from db.database import Database
+from db.database import Database, now_iso
 from market.hyperliquid_client import HyperliquidClient
 from agents.population import Population
 from engine.orchestrator import Orchestrator
@@ -74,6 +75,14 @@ def parse_args() -> argparse.Namespace:
              "see engine/orchestrator.py) and resume live trading. Investigate the reason "
              "logged at trip time BEFORE clearing this - it does not re-arm automatically "
              "by design. Exits immediately after clearing; does not start the trading loop.",
+    )
+    parser.add_argument(
+        "--snapshot-best", type=int, nargs="?", const=10, default=None, metavar="N",
+        help="Save the current top N alive agents' genomes (by fitness, default N=10) to "
+             "SNAPSHOT_DIR (default 'snapshots/') as JSON files, then exit. These are "
+             "reloaded automatically the next time a FRESH population is seeded (an empty "
+             "DB, or after --reset) - a head start instead of pure random genomes. Never "
+             "touches the currently-running population.",
     )
     return parser.parse_args()
 
@@ -150,6 +159,32 @@ def main() -> None:
                 db.set_meta("live_peak_equity", "")
                 log.info("Cleared. Live trading will resume from the next run of `python3 main.py` "
                          "(without --clear-live-breaker) if TRADING_MODE=live.")
+            return
+
+        if args.snapshot_best is not None:
+            top = sorted(db.list_alive_agents(), key=lambda a: a.fitness, reverse=True)[: args.snapshot_best]
+            if not top:
+                log.info("No alive agents to snapshot.")
+                return
+            snap_dir = Path(CONFIG.snapshot_dir)
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            stamp = now_iso().replace(":", "").replace("+00:00", "Z")
+            for agent in top:
+                path = snap_dir / f"agent{agent.id}_{CONFIG.token}_{stamp}.json"
+                path.write_text(json.dumps({
+                    "source_agent_id": agent.id,
+                    "token": CONFIG.token,
+                    "snapshotted_at": now_iso(),
+                    "fitness": agent.fitness,
+                    "tier": agent.tier,
+                    "generation": agent.generation,
+                    "wins": agent.wins,
+                    "losses": agent.losses,
+                    "total_pnl": agent.total_pnl,
+                    "genome": agent.genome,
+                }, indent=2))
+            log.info("Snapshotted %d agent genome(s) to %s - they'll be used to seed any "
+                      "future fresh %s population automatically.", len(top), snap_dir, CONFIG.token)
             return
 
         enforce_single_token_guard(db, args.reset)

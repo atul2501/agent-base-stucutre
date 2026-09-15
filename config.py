@@ -22,8 +22,8 @@ def _bool(name: str, default: bool) -> bool:
 class Config:
     # --- market: single token at a time, by design (see README "step 0" reset) ---
     token: str = os.getenv("TOKEN", "SOL")
-    timeframe: str = os.getenv("TIMEFRAME", "1h")
-    cycle_seconds: int = int(os.getenv("CYCLE_SECONDS", "900"))
+    timeframe: str = os.getenv("TIMEFRAME", "1m")
+    cycle_seconds: int = int(os.getenv("CYCLE_SECONDS", "60"))
     # A slower timeframe checked alongside the primary one - trading with
     # the bigger trend instead of against short-term noise. Live-only (see
     # strategy/signals.py) - not genome-tunable, deliberately a fixed macro
@@ -78,7 +78,10 @@ class Config:
     # request at ~5000 bars (~17 days of 5m data); default sits safely
     # under that.
     backtest_enabled: bool = _bool("BACKTEST_ENABLED", True)
-    backtest_lookback_hours: int = int(os.getenv("BACKTEST_LOOKBACK_HOURS", "360"))
+    # At the default 1m timeframe, Hyperliquid's ~5000-bar cap covers only
+    # ~83h - 80 stays safely under that. Raise this back up if TIMEFRAME is
+    # set to something coarser (e.g. 360 at 1h, matching the old default).
+    backtest_lookback_hours: int = int(os.getenv("BACKTEST_LOOKBACK_HOURS", "80"))
     backtest_candidates: int = int(os.getenv("BACKTEST_CANDIDATES", "5"))
     # A second, coarser-timeframe backtest window used ONLY to check that a
     # new candidate genome isn't just tuned to whatever regime happened in
@@ -108,6 +111,12 @@ class Config:
     win_streak_share_threshold: int = int(os.getenv("WIN_STREAK_SHARE_THRESHOLD", "8"))
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))
     starting_paper_balance: float = float(os.getenv("STARTING_PAPER_BALANCE", "1000"))
+    # Folder of hand-picked agent genomes (see `python3 main.py --snapshot-best`)
+    # that get reloaded to seed any future FRESH population (empty DB, or after
+    # --reset) - a head start instead of starting every fresh run from pure
+    # random genomes. Never touches an already-running population - see
+    # agents/population.py::seed_if_empty.
+    snapshot_dir: str = os.getenv("SNAPSHOT_DIR", "snapshots")
 
     # --- Revalidation: periodic re-backtest of already-proven agents ---
     # A veteran agent proves itself once (a real win) and then keeps trading

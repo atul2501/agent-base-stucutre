@@ -196,7 +196,8 @@ def create_app(config: Config) -> Flask:
     def pnl_history():
         conn = get_conn()
         rows = conn.execute(
-            "SELECT cycle, alive_count, active_trader_count, professional_count, best_total_pnl, ran_at "
+            "SELECT cycle, alive_count, active_trader_count, professional_count, "
+            "best_total_pnl, total_realized_pnl, ran_at "
             "FROM population_cycles ORDER BY id DESC LIMIT 200"
         ).fetchall()
         return jsonify(list(reversed([_row_to_dict(r) for r in rows])))

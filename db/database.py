@@ -93,6 +93,11 @@ class Database:
             self.conn.execute("ALTER TABLE agents ADD COLUMN revalidated_at TEXT")
             self.conn.commit()
 
+        cycle_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(population_cycles)")}
+        if "total_realized_pnl" not in cycle_cols:
+            self.conn.execute("ALTER TABLE population_cycles ADD COLUMN total_realized_pnl REAL")
+            self.conn.commit()
+
     def close(self) -> None:
         self.conn.close()
 
@@ -302,13 +307,19 @@ class Database:
         best_agent_id: Optional[int],
         best_total_pnl: Optional[float],
     ) -> None:
+        # Swarm-wide realized PnL to date, computed fresh each cycle rather
+        # than threaded through as a running total - cheap (indexed by
+        # result) and can never drift from the trades table's ground truth.
+        total_realized_pnl = self.conn.execute(
+            "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE result IN ('win', 'loss')"
+        ).fetchone()[0]
         self.conn.execute(
             """INSERT INTO population_cycles
                (cycle, alive_count, active_trader_count, professional_count,
-                best_agent_id, best_total_pnl, ran_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                best_agent_id, best_total_pnl, total_realized_pnl, ran_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (cycle, alive_count, active_trader_count, professional_count,
-             best_agent_id, best_total_pnl, now_iso()),
+             best_agent_id, best_total_pnl, total_realized_pnl, now_iso()),
         )
         self.conn.commit()
 

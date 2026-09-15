@@ -1,6 +1,6 @@
 """Ties market data, signals, paper execution, and the population lifecycle
-together into one repeating cycle. Swing-trading timeframe, so cycles run
-every `cycle_seconds` (default 15 min) rather than tick-by-tick.
+together into one repeating cycle, run every `cycle_seconds` (default 60s,
+paired with the default 1m `timeframe`) rather than tick-by-tick.
 
 The population always trades exactly one token (config.token) - see
 strategy/genome.py and README.md "one token at a time" design.

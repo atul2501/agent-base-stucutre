@@ -47,6 +47,30 @@ starts learning the new token from scratch. Without `--reset`, starting
 with a different `TOKEN` than the database was built for is refused with a
 clear error rather than silently mixing strategies.
 
+## Snapshotting your best agents
+
+Spotted agents on the leaderboard worth keeping around for next time? Save
+their genomes to a reusable library:
+
+```bash
+python3 main.py --snapshot-best [N]    # N optional, default 10
+```
+
+```bash
+python3 main.py --snapshot-best        # top 10 alive agents by fitness
+python3 main.py --snapshot-best 25     # or pick N
+```
+
+This writes each agent's genome (plus its fitness/wins/losses at snapshot
+time, for your own reference) as a JSON file under `SNAPSHOT_DIR` (default
+`snapshots/`), then exits. Any files in that folder are reloaded
+automatically the next time a **fresh** population is seeded - an empty
+database, or after `--reset` - giving that run a head start instead of
+starting purely random. It never touches an already-running population, and
+a snapshot built for a different `TOKEN` is skipped with a warning rather
+than silently mixing strategies. The library is just a folder of JSON files:
+delete ones you no longer want, or copy them between machines/deployments.
+
 ## The dashboard
 
 `main.py` starts a local web dashboard automatically at
@@ -57,7 +81,12 @@ or disable with `--no-dashboard`). It shows, refreshing every 5s:
   live health status.
 - Population stats: alive agents, active traders, professional-tier count,
   total realized PnL, overall win rate, max generation reached.
-- A chart of the best agent's total PnL by cycle.
+- A dependency-free chart (no external CDN, so it still renders on a
+  server with no outbound internet access) of PnL by cycle: the swarm's
+  total realized PnL (a real equity curve) alongside whichever agent is
+  currently ranked best - the latter jumps around under the do-or-die
+  lifecycle since *which* agent is "best" keeps changing, so it's a
+  secondary reference line rather than the main story.
 - A leaderboard of the top 30 agents (tier, generation, wins/losses, streak,
   balance, total PnL).
 - Recent trades, and - once live trading is armed - the real position and a
@@ -238,13 +267,16 @@ cp .env.example .env   # set TOKEN, get an OLLAMA_API_KEY, etc.
 python3 main.py        # dashboard at http://127.0.0.1:8000
 ```
 
-Runs forever, one cycle every `CYCLE_SECONDS` (default 900s / 15 min).
-Ctrl+C to stop. Use `--reset` after changing `TOKEN`, `--no-dashboard` to
-skip the web UI.
+Runs forever, one cycle every `CYCLE_SECONDS` (default 60s, matching the
+default `TIMEFRAME=1m`). Ctrl+C to stop. Use `--reset` after changing
+`TOKEN`, `--no-dashboard` to skip the web UI, `--snapshot-best [N]` to save
+the current top agents (see "Snapshotting your best agents" above).
 
 ## Scope
 
-- Swing-trading cadence (candles + a 15-minute default loop), not HFT.
+- Fast-reacting default (1-minute candles, 60s loop) - raise `TIMEFRAME`/
+  `CYCLE_SECONDS` together (and `BACKTEST_LOOKBACK_HOURS` to match) for a
+  slower swing-trading cadence instead.
 - Open-interest % change is computed against the previous cycle's snapshot
   held in memory - it resets on restart (first cycle after a restart just
   skips that one confirmation).

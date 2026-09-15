@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS population_cycles (
     professional_count INTEGER NOT NULL,
     best_agent_id INTEGER,
     best_total_pnl REAL,
+    -- Swarm-wide realized PnL to date at this cycle (sum of all closed
+    -- trades' pnl so far) - a real equity curve, unlike best_total_pnl
+    -- which jumps around as WHICH agent is currently ranked #1 changes
+    -- under the do-or-die lifecycle. See dashboard's "Best Agent PnL by
+    -- Cycle" chart.
+    total_realized_pnl REAL,
     ran_at TEXT NOT NULL
 );
 

@@ -25,9 +25,11 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import random
 from datetime import datetime, timezone
+from pathlib import Path
 
 from backtest.engine import backtest_genome, fitness_score
 from config import Config
@@ -104,12 +106,45 @@ class Population:
 
     # ---- seeding ----
 
+    def _load_snapshot_genomes(self) -> list[Genome]:
+        """Hand-picked genomes saved with `python3 main.py --snapshot-best`
+        (see main.py) - a head start for a FRESH population instead of pure
+        random genomes. Only used by seed_if_empty (below), so an
+        already-running population is never touched by dropping files into
+        this folder. Silently skips a file that fails to parse or was
+        snapshotted for a different token (this population only ever trades
+        one - see README "one token at a time") rather than blocking startup."""
+        snap_dir = Path(self.config.snapshot_dir)
+        if not snap_dir.is_dir():
+            return []
+        genomes = []
+        for path in sorted(snap_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                genome_dict = data["genome"]
+                if genome_dict.get("coin") != self.config.token:
+                    log.warning("Skipping snapshot %s - built for %s, current token is %s",
+                                path.name, genome_dict.get("coin"), self.config.token)
+                    continue
+                genomes.append(Genome.from_dict(genome_dict))
+            except Exception:
+                log.exception("Skipping unreadable snapshot file %s", path)
+        return genomes
+
     def seed_if_empty(self) -> None:
         if self.db.count_alive() > 0:
             return
-        log.info("No agents found - seeding initial population of %d for %s",
-                  self.config.initial_population, self.config.token)
-        for _ in range(self.config.initial_population):
+        snapshot_genomes = self._load_snapshot_genomes()
+        for genome in snapshot_genomes:
+            self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
+        if snapshot_genomes:
+            log.info("Seeded %d agent(s) from snapshot library (%s)",
+                      len(snapshot_genomes), self.config.snapshot_dir)
+
+        remaining = max(0, self.config.initial_population - len(snapshot_genomes))
+        log.info("Seeding %d more random-candidate agent(s) for %s (initial population %d)",
+                  remaining, self.config.token, self.config.initial_population)
+        for _ in range(remaining):
             candidates = [Genome.random(self.config.token, self.config.timeframe, self.rng)
                           for _ in range(self.config.backtest_candidates)]
             genome = self._pick_best(candidates)

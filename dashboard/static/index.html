@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Swarm Dashboard</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #0b0e14; --panel: #131722; --panel-2: #1a1f2e; --border: #232838;
@@ -46,7 +45,17 @@
   section { margin-bottom: 28px; }
   section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 12px; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-  .chart-wrap { height: 240px; }
+  .chart-wrap { height: 240px; position: relative; }
+  .chart-wrap svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  .viz-legend { display: flex; gap: 16px; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+  .viz-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .viz-tooltip {
+    position: absolute; pointer-events: none; display: none; z-index: 5;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; line-height: 1.5; white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .stale-badge { color: var(--amber); border-color: rgba(232,182,76,0.4); }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -79,8 +88,14 @@
   <div class="grid" id="stat-cards"></div>
 
   <section>
-    <h2>Best Agent PnL by Cycle</h2>
-    <div class="panel chart-wrap"><canvas id="pnlChart"></canvas></div>
+    <h2>PnL by Cycle</h2>
+    <div class="panel">
+      <div class="viz-legend" id="pnl-legend"></div>
+      <div class="chart-wrap">
+        <svg id="pnlChart" role="img" aria-label="PnL by cycle"></svg>
+        <div class="viz-tooltip" id="pnl-tooltip"></div>
+      </div>
+    </div>
   </section>
 
   <section id="live-section" style="display:none">
@@ -153,13 +168,108 @@ const ago = (iso) => {
   return Math.floor(s/3600) + "h ago";
 };
 
-let pnlChart = null;
 // How many trades to show, grown 15 at a time by the "Load more" button.
 // Re-sent as `limit` on every 5s auto-refresh too, instead of true offset
 // pagination - keeps the displayed set simply "the top N", so it can't
 // duplicate or shift as new trades come in between clicks.
 let tradesLimit = 15;
 const TRADES_PAGE_SIZE = 15;
+
+// Dependency-free inline SVG line chart - no external CDN (Chart.js used to
+// be loaded from cdnjs; on a server without outbound internet access to that
+// CDN the canvas just stayed permanently blank with no visible error). Two
+// series max, same $ unit, one shared y-axis (never a dual-axis chart).
+const PNL_SERIES_COLORS = ["#4f8cff", "#a875ff"]; // accent, purple - already used elsewhere on this page
+let pnlChartState = null; // {cyclesPx: [{cx, cycle}], series: [{label,color,values}], scaleY(v)}
+
+function renderLineChart(svg, legendEl, cycles, series) {
+  const w = svg.clientWidth || 600, h = svg.clientHeight || 240;
+  const padL = 50, padR = 10, padT = 10, padB = 22;
+  const plotW = Math.max(1, w - padL - padR), plotH = Math.max(1, h - padT - padB);
+
+  legendEl.innerHTML = series.map(s =>
+    `<span><span class="swatch" style="background:${s.color}"></span>${s.label}</span>`).join('');
+
+  if (!cycles.length) {
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.innerHTML = `<text x="${w/2}" y="${h/2}" text-anchor="middle" fill="#8b93a7" font-size="13">No cycles yet</text>`;
+    pnlChartState = null;
+    return;
+  }
+
+  const allVals = series.flatMap(s => s.values).filter(v => v !== null && v !== undefined && !isNaN(v));
+  let minV = Math.min(0, ...allVals), maxV = Math.max(0, ...allVals);
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const vPad = (maxV - minV) * 0.1;
+  minV -= vPad; maxV += vPad;
+
+  const xAt = i => padL + (cycles.length === 1 ? plotW / 2 : (i / (cycles.length - 1)) * plotW);
+  const yAt = v => padT + plotH - ((v - minV) / (maxV - minV)) * plotH;
+
+  let out = '';
+  const gridN = 4;
+  for (let i = 0; i <= gridN; i++) {
+    const v = minV + (maxV - minV) * (i / gridN);
+    const gy = yAt(v);
+    out += `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${w - padR}" y2="${gy.toFixed(1)}" stroke="#232838" stroke-width="1"/>`;
+    out += `<text x="${padL - 8}" y="${(gy + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#8b93a7">${fmt(v, 0)}</text>`;
+  }
+  if (minV < 0 && maxV > 0) {
+    const zy = yAt(0);
+    out += `<line x1="${padL}" y1="${zy.toFixed(1)}" x2="${w - padR}" y2="${zy.toFixed(1)}" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3,3"/>`;
+  }
+  const labelIdxs = cycles.length > 1
+    ? [...new Set([0, Math.floor((cycles.length - 1) / 2), cycles.length - 1])]
+    : [0];
+  labelIdxs.forEach(i => {
+    out += `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="10" fill="#8b93a7">c${cycles[i]}</text>`;
+  });
+
+  series.forEach(s => {
+    const pts = s.values
+      .map((v, i) => (v === null || v === undefined || isNaN(v)) ? null : [xAt(i), yAt(v)])
+      .filter(Boolean);
+    if (!pts.length) return;
+    const d = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+    out += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  });
+  out += `<line id="pnl-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT + plotH}" stroke="#8b93a7" stroke-width="1" style="display:none"/>`;
+
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.innerHTML = out;
+  pnlChartState = { padL, padR, plotW, cycles, series, xAt, yAt };
+}
+
+function attachChartHover(svg, tooltipEl) {
+  const wrap = svg.parentElement;
+  svg.addEventListener('mousemove', (e) => {
+    if (!pnlChartState) return;
+    const rect = svg.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (svg.clientWidth / rect.width || 1);
+    const { padL, plotW, cycles, series, xAt, yAt } = pnlChartState;
+    const frac = cycles.length > 1 ? Math.max(0, Math.min(1, (mx - padL) / plotW)) : 0;
+    const idx = Math.round(frac * (cycles.length - 1));
+    const cx = xAt(idx);
+    const crosshair = svg.querySelector('#pnl-crosshair');
+    if (crosshair) { crosshair.setAttribute('x1', cx); crosshair.setAttribute('x2', cx); crosshair.style.display = ''; }
+
+    const lines = series.map(s => {
+      const v = s.values[idx];
+      return `<span class="swatch" style="background:${s.color}"></span>${s.label}: `
+        + `<b>${v === null || v === undefined || isNaN(v) ? '-' : (v >= 0 ? '+' : '') + '$' + fmt(v)}</b>`;
+    }).join('<br>');
+    tooltipEl.innerHTML = `c${cycles[idx]}<br>${lines}`;
+    tooltipEl.style.display = '';
+    tooltipEl.style.left = Math.min(cx + 10, wrap.clientWidth - tooltipEl.offsetWidth - 4) + 'px';
+    tooltipEl.style.top = '4px';
+  });
+  svg.addEventListener('mouseleave', () => {
+    tooltipEl.style.display = 'none';
+    const crosshair = svg.querySelector('#pnl-crosshair');
+    if (crosshair) crosshair.style.display = 'none';
+  });
+}
+attachChartHover(document.getElementById('pnlChart'), document.getElementById('pnl-tooltip'));
 
 function ollamaBadge(status) {
   const map = {
@@ -254,21 +364,60 @@ async function section(name, fn) {
   }
 }
 
+// Last-known-good API responses. A single endpoint failing (transient
+// network hiccup, a 500 from one route) used to fail the whole `Promise.all`
+// and freeze EVERY section at whatever it last showed - silently, since only
+// console.error logged it - which is exactly what "dashboard shows agents
+// that are actually dead" looks like: real state moved on, the page just
+// stopped updating and gave no visible sign of it. Each endpoint is now
+// fetched independently and falls back to its own last-good value, and a
+// staleness badge makes a stuck refresh visible instead of silent.
+const lastGood = {
+  overview: null, population: null, leaderboard: [],
+  tradesResp: { trades: [], total: 0 }, pnlHistory: [], regimeStats: [],
+};
+let lastRefreshOk = false;
+let lastRefreshAt = null;
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} -> HTTP ${r.status}`);
+  return r.json();
+}
+
 async function refresh() {
-  let overview, population, leaderboard, tradesResp, pnlHistory, regimeStats;
-  try {
-    [overview, population, leaderboard, tradesResp, pnlHistory, regimeStats] = await Promise.all([
-      fetch('/api/overview').then(r => r.json()),
-      fetch('/api/population').then(r => r.json()),
-      fetch('/api/leaderboard').then(r => r.json()),
-      fetch(`/api/trades?limit=${tradesLimit}`).then(r => r.json()),
-      fetch('/api/pnl_history').then(r => r.json()),
-      fetch('/api/regime_stats').then(r => r.json()),
-    ]);
-  } catch (e) {
-    console.error('dashboard: failed to fetch API data', e);
-    return;
-  }
+  const endpoints = {
+    overview: '/api/overview',
+    population: '/api/population',
+    leaderboard: '/api/leaderboard',
+    tradesResp: `/api/trades?limit=${tradesLimit}`,
+    pnlHistory: '/api/pnl_history',
+    regimeStats: '/api/regime_stats',
+  };
+  const keys = Object.keys(endpoints);
+  const results = await Promise.allSettled(keys.map(k => fetchJson(endpoints[k])));
+
+  let anyFailed = false;
+  results.forEach((res, i) => {
+    const key = keys[i];
+    if (res.status === 'fulfilled') {
+      lastGood[key] = res.value;
+    } else {
+      anyFailed = true;
+      console.error(`dashboard: failed to fetch ${endpoints[key]}`, res.reason);
+    }
+  });
+  lastRefreshOk = !anyFailed;
+  lastRefreshAt = Date.now();
+
+  const overview = lastGood.overview;
+  const population = lastGood.population;
+  const leaderboard = lastGood.leaderboard;
+  const tradesResp = lastGood.tradesResp;
+  const pnlHistory = lastGood.pnlHistory;
+  const regimeStats = lastGood.regimeStats;
+  if (!overview || !population) return; // nothing successfully loaded yet at all
+
   const trades = tradesResp.trades || [];
   const tradesTotal = tradesResp.total || 0;
 
@@ -281,6 +430,10 @@ async function refresh() {
     badges.push(`<span class="badge ${overview.mode}">${overview.mode === 'live' ? 'LIVE - REAL MONEY' : 'PAPER TRADING'}</span>`);
     badges.push(ollamaBadge(overview.ollama));
     badges.push(`<span class="badge">Cycle ${overview.last_cycle ? overview.last_cycle.cycle : 0} &middot; ${overview.last_cycle ? ago(overview.last_cycle.ran_at) : 'not started'}</span>`);
+    if (!lastRefreshOk) {
+      badges.push(`<span class="badge stale-badge" title="At least one API call failed on the last refresh attempt - showing the last good data for that section instead of freezing everything silently.">`
+        + `<span class="dot amber"></span>Refresh error - showing last good data</span>`);
+    }
     document.getElementById('badges').innerHTML = badges.join('');
 
     const banner = document.getElementById('breaker-banner');
@@ -316,25 +469,14 @@ async function refresh() {
   });
 
   section('pnl-chart', () => {
-    if (typeof Chart === 'undefined') throw new Error('Chart.js failed to load (CDN blocked?) - skipping chart only');
-    const labels = pnlHistory.map(r => 'c' + r.cycle);
-    const data = pnlHistory.map(r => r.best_total_pnl || 0);
-    if (!pnlChart) {
-      const ctx = document.getElementById('pnlChart').getContext('2d');
-      pnlChart = new Chart(ctx, {
-        type: 'line',
-        data: { labels, datasets: [{ label: 'Best agent total PnL ($)', data, borderColor: '#4f8cff',
-                 backgroundColor: 'rgba(79,140,255,0.08)', fill: true, tension: 0.25, pointRadius: 0 }] },
-        options: { responsive: true, maintainAspectRatio: false,
-          scales: { x: { ticks: { color: '#8b93a7' }, grid: { color: '#232838' } },
-                    y: { ticks: { color: '#8b93a7' }, grid: { color: '#232838' } } },
-          plugins: { legend: { labels: { color: '#e6e8ee' } } } }
-      });
-    } else {
-      pnlChart.data.labels = labels;
-      pnlChart.data.datasets[0].data = data;
-      pnlChart.update('none');
-    }
+    const cycles = pnlHistory.map(r => r.cycle);
+    const series = [
+      { label: 'Swarm total realized PnL', color: PNL_SERIES_COLORS[0],
+        values: pnlHistory.map(r => r.total_realized_pnl) },
+      { label: "Current best agent's total PnL", color: PNL_SERIES_COLORS[1],
+        values: pnlHistory.map(r => r.best_total_pnl) },
+    ];
+    renderLineChart(document.getElementById('pnlChart'), document.getElementById('pnl-legend'), cycles, series);
   });
 
   section('regime-stats', () => {
