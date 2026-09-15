@@ -301,7 +301,10 @@ class Population:
     def _check_promotion(self, parent_id: int) -> None:
         if parent_id is None:
             return
-        children = self.db.children_of(parent_id)
+        # Only alive children count - a lineage that already died back down
+        # (won once, then lost its next do-or-die trade) isn't the "proven,
+        # self-sustaining lineage" this promotion is meant to reward.
+        children = [c for c in self.db.children_of(parent_id) if c.status == "alive"]
         winners = [c for c in children if c.wins >= 1]
         if len(children) >= 2 and len(winners) >= 2:
             parent = self.db.get_agent(parent_id)

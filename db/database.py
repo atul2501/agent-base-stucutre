@@ -152,7 +152,12 @@ class Database:
         ).fetchone()[0]
 
     def children_of(self, parent_id: int) -> list[AgentRow]:
-        rows = self.conn.execute("SELECT * FROM agents WHERE parent_id = ?", (parent_id,)).fetchall()
+        # Ordered by id (creation order) so callers that take winners[:N] get
+        # a deterministic, reproducible pick rather than whatever order
+        # SQLite happens to return.
+        rows = self.conn.execute(
+            "SELECT * FROM agents WHERE parent_id = ? ORDER BY id", (parent_id,)
+        ).fetchall()
         return [self._row_to_agent(r) for r in rows]
 
     def set_active_traders(self, agent_ids: set[int]) -> None:
