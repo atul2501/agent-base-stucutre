@@ -32,7 +32,7 @@ class LiveExecutor:
         if not config.hl_private_key:
             raise ValueError("HYPERLIQUID_PRIVATE_KEY is required for live trading")
         self.config = config
-        base_url = constants.TESTNET_API_URL if config.hl_network.lower() == "testnet" else constants.MAINNET_API_URL
+        base_url = constants.TESTNET_API_URL if config.hl_network == "testnet" else constants.MAINNET_API_URL
         wallet = Account.from_key(config.hl_private_key)
         self.address = config.hl_wallet_address or wallet.address
         self.exchange = Exchange(wallet, base_url, account_address=self.address)

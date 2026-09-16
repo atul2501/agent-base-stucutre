@@ -32,7 +32,12 @@ SYSTEM_PROMPT = (
     "Be conservative - prefer hold when signals genuinely conflict."
 )
 
-_client = ollama.Client(host=CONFIG.ollama_host)
+# Explicit timeout - consult() runs synchronously inside the orchestrator's
+# main trading cycle (engine/orchestrator.py::_process_entries). Without a
+# timeout, a hung/slow cloud endpoint would stall that entire cycle instead
+# of failing fast into the "hold" fallback like every other failure mode
+# here already does.
+_client = ollama.Client(host=CONFIG.ollama_host, timeout=CONFIG.ollama_timeout_seconds)
 
 _status_lock = threading.Lock()
 _status = {"state": "unknown", "detail": "", "checked_at": None}
@@ -116,7 +121,7 @@ def consult(genome: Genome, features: Features, candidate: Signal) -> Signal:
             action = "hold"
         confidence = float(parsed.get("confidence", 0.3))
         rationale = str(parsed.get("rationale", ""))[:200]
-        _set_status("ready")
+        _set_status("ready", f"model={CONFIG.ollama_model} host={CONFIG.ollama_host}")
         return Signal(
             action=action,
             confidence=max(0.0, min(1.0, confidence)),

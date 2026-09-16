@@ -147,7 +147,7 @@ def main() -> None:
                   "LIVE" if CONFIG.is_live() else "PAPER TRADING",
                   CONFIG.hl_network, CONFIG.token)
         if CONFIG.is_live():
-            if CONFIG.hl_network.lower() == "mainnet":
+            if CONFIG.hl_network == "mainnet":
                 log.warning("LIVE TRADING IS ARMED ON MAINNET. Real orders, real money.")
             else:
                 log.warning("LIVE TRADING IS ARMED ON TESTNET. Real orders, fake testnet funds.")
@@ -201,7 +201,7 @@ def main() -> None:
 
         enforce_single_token_guard(db, args.reset)
 
-        hl = HyperliquidClient(network="mainnet" if CONFIG.hl_network == "mainnet" else "testnet")
+        hl = HyperliquidClient(network=CONFIG.hl_network)
         if not hl.is_valid_coin(CONFIG.token):
             log.error("TOKEN=%s is not a valid Hyperliquid perp symbol.", CONFIG.token)
             sys.exit(1)

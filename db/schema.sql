@@ -3,8 +3,8 @@ CREATE TABLE IF NOT EXISTS agents (
     parent_id INTEGER,
     generation INTEGER NOT NULL DEFAULT 0,
     genome_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'alive',        -- alive | dead
-    tier TEXT NOT NULL DEFAULT 'standard',       -- standard | professional
+    status TEXT NOT NULL DEFAULT 'alive' CHECK (status IN ('alive', 'dead')),
+    tier TEXT NOT NULL DEFAULT 'standard' CHECK (tier IN ('standard', 'professional')),
     is_active_trader INTEGER NOT NULL DEFAULT 0,
     is_live_trader INTEGER NOT NULL DEFAULT 0,
     balance REAL NOT NULL,
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id INTEGER NOT NULL,
     coin TEXT NOT NULL,
-    side TEXT NOT NULL,                          -- long | short
+    side TEXT NOT NULL CHECK (side IN ('long', 'short')),
     entry_price REAL NOT NULL,
     exit_price REAL,
     size REAL NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS trades (
     stop_loss REAL,
     take_profit REAL,
     pnl REAL,
-    result TEXT NOT NULL DEFAULT 'open',         -- open | win | loss
+    result TEXT NOT NULL DEFAULT 'open' CHECK (result IN ('open', 'win', 'loss')),
     entry_reason TEXT,
     exit_reason TEXT,
     regime TEXT,                                 -- trending-up | trending-down | ranging, at entry
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS live_position (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     coin TEXT NOT NULL,
-    side TEXT,
+    side TEXT CHECK (side IN ('long', 'short') OR side IS NULL),
     size REAL NOT NULL DEFAULT 0,
     notional REAL NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
@@ -104,11 +104,11 @@ CREATE TABLE IF NOT EXISTS live_position (
 CREATE TABLE IF NOT EXISTS live_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     coin TEXT NOT NULL,
-    action TEXT NOT NULL,        -- open | increase | decrease | close | flip
-    side TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('open', 'increase', 'decrease', 'close', 'flip')),
+    side TEXT NOT NULL CHECK (side IN ('long', 'short')),
     notional REAL NOT NULL,
     fill_price REAL,
-    status TEXT NOT NULL,        -- filled | error
+    status TEXT NOT NULL CHECK (status IN ('filled', 'error')),
     detail TEXT,
     placed_at TEXT NOT NULL
 );

@@ -40,7 +40,14 @@ class Config:
     # be set to the exact phrase below - this extra gate only applies to
     # mainnet, since testnet has nothing real to lose.
     trading_mode: str = os.getenv("TRADING_MODE", "paper")
-    hl_network: str = os.getenv("HL_NETWORK", "testnet")
+    # Normalized once here (stripped + lowercased) so every other place in
+    # the codebase that checks "mainnet" vs "testnet" compares against this
+    # single clean value instead of re-deriving it - three call sites used
+    # to each do their own (inconsistent) .lower()/comparison, so a stray
+    # space or a value like "Mainnet" could make the live-executor's network
+    # pick disagree with is_live()'s mainnet-confirmation gate. __post_init__
+    # below rejects anything that isn't exactly "testnet" or "mainnet".
+    hl_network: str = os.getenv("HL_NETWORK", "testnet").strip().lower()
     hl_wallet_address: str = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
     hl_private_key: str = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
     live_trading_confirmed: str = os.getenv("LIVE_TRADING_CONFIRMED", "")
@@ -173,6 +180,9 @@ class Config:
     ollama_host: str = os.getenv("OLLAMA_HOST", "https://ollama.com")
     ollama_api_key: str = os.getenv("OLLAMA_API_KEY", "")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+    # consult() runs synchronously inside the trading cycle - a hung request
+    # must fail fast into the "hold" fallback rather than stall the cycle.
+    ollama_timeout_seconds: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "15"))
 
     # --- storage ---
     db_path: str = os.getenv("DB_PATH", "db/trading_agents.db")
@@ -184,10 +194,18 @@ class Config:
     fee_rate: float = 0.00035  # approx Hyperliquid taker fee
     slippage_bps: float = 2.0  # assumed slippage in basis points on paper fills
 
+    def __post_init__(self) -> None:
+        if self.hl_network not in ("testnet", "mainnet"):
+            raise ValueError(
+                f"HL_NETWORK={self.hl_network!r} is invalid - must be exactly "
+                f"'testnet' or 'mainnet'. Refusing to guess which network "
+                f"real orders (if TRADING_MODE=live) would go to."
+            )
+
     def is_live(self) -> bool:
         if self.trading_mode.lower() != "live":
             return False
-        if self.hl_network.lower() == "mainnet":
+        if self.hl_network == "mainnet":
             return self.live_trading_confirmed == LIVE_CONFIRMATION_PHRASE
         return True  # live on testnet is fake money - no extra confirmation needed
 

@@ -119,7 +119,10 @@ def adx(highs: list[float], lows: list[float], closes: list[float], period: int)
         dx = np.where(di_sum > 0, 100.0 * np.abs(plus_di - minus_di) / di_sum, 0.0)
 
     adx_out = np.zeros(m)
-    start = period - 1 + period  # need `period` DX values before the first ADX average
+    # First valid DX is at index period-1, so a window of `period` DX values
+    # ends at period-1 + (period-1) = 2*period-2, not 2*period-1 - the old
+    # formula pulled in one extra DX value for the seed average.
+    start = period - 1 + (period - 1)
     if start >= m:
         adx_out[period - 1:] = dx[period - 1:].mean() if m > period - 1 else 0.0
         out = np.zeros(n)
