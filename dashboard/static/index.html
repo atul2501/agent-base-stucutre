@@ -741,6 +741,7 @@ async function refresh() {
   section('stat-cards', () => {
     const totalPnl = population.total_realized_pnl || 0;
     const cards = [
+      [`${overview.token} Price`, overview.last_price !== null && overview.last_price !== undefined ? '$' + fmt(overview.last_price, 4) : '-', overview.timeframe + ' candles'],
       ["Alive Agents", population.alive_count || 0, `of ${overview.population_cap} cap`],
       ["Dead Agents", population.dead_count || 0, "lost a trade - do or die"],
       ["Total Agents Created", population.total_ever || 0, `${population.alive_count || 0} alive, ${population.dead_count || 0} dead`],

@@ -56,11 +56,13 @@ def create_app(config: Config) -> Flask:
         ).fetchone()
         breaker_row = conn.execute(
             "SELECT key, value FROM meta WHERE key IN "
-            "('live_breaker_tripped', 'live_breaker_reason', 'live_breaker_tripped_at')"
+            "('live_breaker_tripped', 'live_breaker_reason', 'live_breaker_tripped_at', 'last_price')"
         ).fetchall()
         breaker_meta = {r["key"]: r["value"] for r in breaker_row}
+        last_price = breaker_meta.get("last_price")
         return jsonify({
             "token": config.token,
+            "last_price": float(last_price) if last_price is not None else None,
             "timeframe": config.timeframe,
             "cycle_seconds": config.cycle_seconds,
             "network": config.hl_network,
