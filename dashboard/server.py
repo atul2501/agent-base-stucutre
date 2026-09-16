@@ -11,6 +11,7 @@ dashboard polled every few seconds.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -117,29 +118,31 @@ def create_app(config: Config) -> Flask:
         conn = get_conn()
         # Top 50 by fitness out of up to population_cap (500) alive agents -
         # matches ACTIVE_TRADER_COUNT, the set actually allowed to trade.
-        # Mirrors AgentRow.fitness in db/database.py exactly (% return on
-        # starting balance + log1p(wins)*10, not raw PnL dollars) so the
-        # dashboard's ranking matches what actually decides active-trader
-        # selection - these had drifted apart before.
         #
-        # win_rate isn't used: under do-or-die a single loss kills the
-        # agent, so every alive agent has losses == 0 and win_rate is
-        # always exactly 0.0 or 1.0, unable to distinguish a 1-win agent
-        # from a 20-win one. LN(wins+1) grows with a proven track record
-        # but with diminishing returns rather than a flat +10 for any win.
+        # Fetched unsorted and ranked here in Python (not a SQL ORDER BY)
+        # using the exact same formula as AgentRow.fitness in db/database.py
+        # (% return on starting balance + log1p(wins)*10, not raw PnL
+        # dollars, not win_rate - see that property's docstring for why).
+        # A duplicated SQL version of this formula lived here before and
+        # silently drifted out of sync with the Python one once already;
+        # it also depended on SQLite's LN() math function, which isn't
+        # available on every SQLite build (SQLITE_ENABLE_MATH_FUNCTIONS is
+        # not universal) and would 500 the whole endpoint if missing.
+        # Computing it once in Python removes both risks structurally.
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
                       balance, wins, losses, win_streak, total_pnl, trades_count, genome_json,
                       revalidation_score, revalidated_at
-               FROM agents WHERE status='alive'
-               ORDER BY (
-                 CASE WHEN (balance - total_pnl) > 0
-                      THEN total_pnl / (balance - total_pnl) * 100.0 ELSE 0 END
-                 + LN(wins + 1) * 10.0
-               ) DESC
-               LIMIT 50"""
+               FROM agents WHERE status='alive'"""
         ).fetchall()
-        return jsonify([_row_to_dict(r) for r in rows])
+
+        def fitness(r: sqlite3.Row) -> float:
+            starting_balance = r["balance"] - r["total_pnl"]
+            pct_return = (r["total_pnl"] / starting_balance * 100.0) if starting_balance > 0 else 0.0
+            return pct_return + math.log1p(r["wins"]) * 10.0
+
+        ranked = sorted(rows, key=fitness, reverse=True)[:50]
+        return jsonify([_row_to_dict(r) for r in ranked])
 
     @app.get("/api/trades")
     def trades():
@@ -336,7 +339,11 @@ def create_app(config: Config) -> Flask:
                 (5, 10, "5-9 wins"), (10, float("inf"), "10+ wins")]
         counts = {label: 0 for _, _, label in bins}
         for r in rows:
-            n = r["trades_count"]
+            # trades_count = wins + 1 final loss (see comment above), so
+            # subtract that loss back out before bucketing by win count -
+            # otherwise every agent lands one bucket too high and "1st
+            # trade" (died with 0 wins) never gets anyone, ever.
+            n = r["trades_count"] - 1
             for lo, hi, label in bins:
                 if lo <= n < hi:
                     counts[label] += 1
