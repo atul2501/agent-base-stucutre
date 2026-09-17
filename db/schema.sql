@@ -62,6 +62,25 @@ CREATE TABLE IF NOT EXISTS strategy_shares (
     shared_at TEXT NOT NULL
 );
 
+-- Preserves an exceptional genome EXACTLY, unlike strategy_shares (which
+-- is always mutated before reuse). Even a top-tier agent dies on its next
+-- loss like anyone else under do-or-die - this is the only place a
+-- genuinely all-time-best genome survives that death byte-for-byte,
+-- available to be re-tested unmutated later (see
+-- Population.refill_if_below_floor / hall_of_fame_exact_clone_rate).
+CREATE TABLE IF NOT EXISTS hall_of_fame (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_agent_id INTEGER NOT NULL,
+    genome_json TEXT NOT NULL,
+    win_streak INTEGER NOT NULL,
+    total_pnl REAL NOT NULL,
+    fitness REAL NOT NULL,
+    recorded_at TEXT NOT NULL,
+    reason TEXT NOT NULL  -- 'new_all_time_high_fitness'
+);
+
+CREATE INDEX IF NOT EXISTS idx_hof_fitness ON hall_of_fame(fitness);
+
 CREATE TABLE IF NOT EXISTS population_cycles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cycle INTEGER NOT NULL,

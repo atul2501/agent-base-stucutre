@@ -96,6 +96,10 @@ class Population:
         # the extra fetch failed, or in tests).
         self.regime_windows = regime_windows or []
         self.set_backtest_window(backtest_candles, backtest_funding)
+        # Counts calls to rank_and_enforce (~1 per trading cycle) - used to
+        # pace forced active-trader rotation without coupling Population to
+        # the orchestrator's own cycle counter.
+        self._rank_enforce_calls = 0
 
     def set_backtest_window(self, candles: list[dict] | None,
                              funding: list[tuple[int, float, float]] | None) -> None:
@@ -208,6 +212,17 @@ class Population:
         for _ in range(needed):
             candidates = []
             for _ in range(self.config.backtest_candidates):
+                # A real (not just probable) shot at reinstating a genuinely
+                # all-time-best genome EXACTLY, unmutated - strategy_shares
+                # below is always mutated before reuse, so a proven peak
+                # genome otherwise only ever gets tested as a derivative of
+                # itself, never itself again. Still screened by _pick_best
+                # against held-out data below, not committed blind.
+                hof = (self.db.sample_hall_of_fame_genome()
+                       if self.rng.random() < self.config.hall_of_fame_exact_clone_rate else None)
+                if hof:
+                    candidates.append(Genome.from_dict(hof))
+                    continue
                 shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
                 if shared:
                     candidates.append(Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3))
@@ -233,11 +248,13 @@ class Population:
         `self.backtest_candles`/`self.backtest_funding` (the same
         recent-window data used to screen new agents - kept fresh by
         orchestrator's periodic refresh) and records the result via
-        `db.set_revalidation`. Purely informational - flags a drifted
-        veteran on the dashboard instead of silently trusting a genome that
-        proved itself once, potentially a long time ago under different
-        market conditions. Never touches status, fitness, or which agents
-        are active/live traders. Returns how many agents were checked."""
+        `db.set_revalidation`. Flags a drifted veteran on the dashboard
+        instead of silently trusting a genome that proved itself once,
+        potentially a long time ago under different market conditions.
+        Never touches the agent's stored status or fitness column - only
+        applies a ranking-only penalty when rank_and_enforce next picks
+        active/live traders (see `_effective_rank_score`). Returns how many
+        agents were checked."""
         if not self.config.backtest_enabled or not self.backtest_candles:
             return 0
         alive = self.db.list_alive_agents()
@@ -258,11 +275,30 @@ class Population:
         top = sorted(alive, key=lambda a: a.fitness, reverse=True)[: self.config.council_size]
         return [Genome.from_dict(a.genome) for a in top]
 
+    def _maybe_record_hall_of_fame(self, agent: AgentRow) -> None:
+        """Snapshots agent's EXACT current genome into hall_of_fame if its
+        fitness is a new all-time high - unlike strategy_shares (always
+        mutated before reuse), this is the only place a genuinely
+        best-ever genome survives verbatim. Called both on win (so a
+        long-lived agent's peak is captured while it's still alive) and
+        right before death (so do-or-die killing it doesn't erase a peak
+        that hasn't been captured yet - this is the critical hook, since a
+        professional-tier agent dies on its next loss exactly like anyone
+        else, and its exact genome would otherwise be gone forever)."""
+        if agent.fitness > self.db.get_max_hall_of_fame_fitness():
+            self.db.record_hall_of_fame(
+                agent.id, agent.genome, agent.win_streak, agent.total_pnl,
+                agent.fitness, reason="new_all_time_high_fitness",
+            )
+            log.info("Agent %d fitness %.2f is a new all-time high - preserved in hall_of_fame",
+                      agent.id, agent.fitness)
+
     def handle_win(self, agent_id: int, pnl: float) -> None:
         self.db.record_win(agent_id, pnl)
         agent = self.db.get_agent(agent_id)
         log.info("Agent %d WON trade (pnl=%.2f, streak=%d) - spawning %d children",
                   agent_id, pnl, agent.win_streak, self.config.children_per_win)
+        self._maybe_record_hall_of_fame(agent)
 
         parent_genome = Genome.from_dict(agent.genome)
         for _ in range(self.config.children_per_win):
@@ -295,6 +331,12 @@ class Population:
             self.db.record_strategy_share(agent.id, agent.genome, agent.win_streak, agent.total_pnl)
 
     def handle_loss(self, agent_id: int, pnl: float) -> None:
+        # Captured BEFORE the kill so this reflects the agent's peak
+        # performance from its winning streak, not the losing trade that's
+        # about to drag its fitness down - that peak is exactly what's
+        # worth preserving.
+        agent = self.db.get_agent(agent_id)
+        self._maybe_record_hall_of_fame(agent)
         self.db.record_loss_and_kill(agent_id, pnl)
         log.info("Agent %d LOST trade (pnl=%.2f) - do or die: eliminated", agent_id, pnl)
 
@@ -316,6 +358,20 @@ class Population:
 
     # ---- ranking / population control ----
 
+    def _effective_rank_score(self, agent: AgentRow) -> float:
+        """Ranking-only score used for active/live-trader slot selection -
+        identical to agent.fitness except a drifted agent (revalidation
+        score below revalidation_drift_threshold) is penalized proportional
+        to how far past the threshold it drifted. Never written back to the
+        DB and never used for the population-cap cull or promotion checks -
+        the stored `fitness`/dashboard history are untouched by this; only
+        which agents get a trading slot this cycle is affected."""
+        score = agent.revalidation_score
+        if score is not None and score < self.config.revalidation_drift_threshold:
+            drift_severity = self.config.revalidation_drift_threshold - score
+            return agent.fitness - drift_severity * self.config.revalidation_drift_penalty_factor
+        return agent.fitness
+
     def rank_and_enforce(self) -> dict:
         alive = self.db.list_alive_agents()
 
@@ -336,7 +392,7 @@ class Population:
             killed_ids = {a.id for a in culuable[:overflow]}
             alive = [a for a in alive if a.id not in killed_ids]
 
-        ranked = sorted(alive, key=lambda a: a.fitness, reverse=True)
+        ranked = sorted(alive, key=self._effective_rank_score, reverse=True)
         top_traders = ranked[: self.config.active_trader_count]
 
         # Guarantee a few slots for the newest untested agents. Without
@@ -356,6 +412,24 @@ class Population:
                     : len(top_traders) - len(newcomers)
                 ]
                 top_traders = keep + newcomers
+
+        # Guarantee a few slots for the LONGEST-benched untested agents -
+        # distinct from the newcomer slots above (which favor the NEWEST
+        # 0-trade agents). Without this, an agent that's been sitting at
+        # 0 trades for a long time (not new, just never fitness-ranked
+        # into a slot) has no path back in except outliving everyone via
+        # the idle-cull timeout - this gives it an actual shot first.
+        if len(top_traders) < len(ranked) and self.config.guaranteed_longest_benched_slots > 0:
+            top_ids = {a.id for a in top_traders}
+            longest_benched = sorted(
+                (a for a in ranked if a.trades_count == 0 and a.id not in top_ids),
+                key=lambda a: a.created_at,
+            )[: self.config.guaranteed_longest_benched_slots]
+            if longest_benched:
+                keep = sorted(top_traders, key=lambda a: a.fitness, reverse=True)[
+                    : len(top_traders) - len(longest_benched)
+                ]
+                top_traders = keep + longest_benched
 
         # Diversity floor: make sure at least one agent from each coarse
         # strategy family is active, if any exist at all in the alive
@@ -377,12 +451,38 @@ class Population:
                 top_traders = [a for a in top_traders if a.id != lowest.id] + [candidate]
                 top_ids = {a.id for a in top_traders}
 
+        # Periodic forced rotation: every forced_rotation_every_n_cycles
+        # calls, swap the single lowest-fitness active trader for one
+        # random benched 0-trade agent. Guarantees no slot is held forever
+        # purely because nothing ever forces a re-test of the bench -
+        # touches exactly one slot, so a genuinely weak agent just gets
+        # crowded back out by the normal fitness sort next cycle anyway.
+        self._rank_enforce_calls += 1
+        if (self.config.forced_rotation_every_n_cycles > 0
+                and self._rank_enforce_calls % self.config.forced_rotation_every_n_cycles == 0
+                and len(top_traders) < len(ranked)):
+            top_ids = {a.id for a in top_traders}
+            benched = [a for a in ranked if a.trades_count == 0 and a.id not in top_ids]
+            if benched and top_traders:
+                pick = self.rng.choice(benched)
+                weakest = min(top_traders, key=lambda a: a.fitness)
+                top_traders = [a for a in top_traders if a.id != weakest.id] + [pick]
+                log.info("Forced rotation: benched agent %d swapped in for active trader %d",
+                          pick.id, weakest.id)
+
         self.db.set_active_traders({a.id for a in top_traders})
 
         # Live capital only ever goes to the most proven subset of the
-        # already-proven top traders - see trading/live_executor.py.
+        # already-proven top traders - see trading/live_executor.py. Re-sorted
+        # by effective (drift-penalized) score rather than sliced in
+        # top_traders' existing order, since newcomer/longest-benched/
+        # diversity-floor slots can append agents out of fitness order -
+        # this ensures live capital specifically avoids a drifted agent
+        # even if one ended up elsewhere in top_traders.
         if self.config.is_live():
-            top_live = top_traders[: self.config.live_active_trader_count]
+            top_live = sorted(top_traders, key=self._effective_rank_score, reverse=True)[
+                : self.config.live_active_trader_count
+            ]
             self.db.set_live_traders({a.id for a in top_live})
         else:
             self.db.set_live_traders(set())

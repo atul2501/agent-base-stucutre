@@ -89,6 +89,23 @@ class Config:
     # is guaranteed at least one real trade instead of potentially never
     # being picked once older/positive-fitness agents occupy every slot.
     guaranteed_newcomer_slots: int = int(os.getenv("GUARANTEED_NEWCOMER_SLOTS", "5"))
+    # A second, distinct reservation from guaranteed_newcomer_slots above:
+    # that one favors the NEWEST 0-trade agents (created_at DESC), so an
+    # agent that's been benched with zero trades for a long time (not new
+    # anymore, just never won a fitness-ranked slot) could otherwise wait
+    # forever. This reserves slots for the OLDEST 0-trade agents instead
+    # (created_at ASC), so nobody's shut out purely by how long they've
+    # already been waiting.
+    guaranteed_longest_benched_slots: int = int(os.getenv("GUARANTEED_LONGEST_BENCHED_SLOTS", "3"))
+    # Every N calls to rank_and_enforce (~N cycles), force-swap the single
+    # lowest-fitness active trader for one random benched 0-trade agent.
+    # Without this, a slot held by fitness ranking alone can go to whoever
+    # got a marginal early win and simply never lose it, since nothing else
+    # ever re-tests whether a currently-benched agent might do better -
+    # only ever touches one slot per window, so it can't meaningfully
+    # undermine the fitness-based meritocracy (a genuinely weak agent gets
+    # crowded back out next cycle by the normal fitness sort anyway).
+    forced_rotation_every_n_cycles: int = int(os.getenv("FORCED_ROTATION_EVERY_N_CYCLES", "20"))
     # New agents are pre-screened against real historical data before they
     # enter the live do-or-die population (see backtest/engine.py) - this
     # doesn't change live trading at all, it just means an agent is BORN
@@ -127,6 +144,14 @@ class Config:
     # before it's had a chance to prove out.
     diversity_floor_enabled: bool = _bool("DIVERSITY_FLOOR_ENABLED", True)
     win_streak_share_threshold: int = int(os.getenv("WIN_STREAK_SHARE_THRESHOLD", "8"))
+    # Unlike strategy_shares above (always mutated before reuse), floor-refill
+    # candidates drawn from hall_of_fame at this rate are used UNMUTATED - a
+    # real (not just probable) shot at reinstating a genuinely all-time-best
+    # genome exactly, since do-or-die means even that genome's original
+    # agent eventually dies on one loss like anyone else. Still screened by
+    # the same backtest candidate selection as every other new agent, not
+    # committed blind.
+    hall_of_fame_exact_clone_rate: float = float(os.getenv("HALL_OF_FAME_EXACT_CLONE_RATE", "0.25"))
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))
     starting_paper_balance: float = float(os.getenv("STARTING_PAPER_BALANCE", "1000"))
     # Folder of hand-picked agent genomes (see `python3 main.py --snapshot-best`)
@@ -141,15 +166,27 @@ class Config:
     # indefinitely until it randomly loses - nothing re-checks whether it
     # still fits the CURRENT market. This periodically re-backtests the
     # top-fitness alive agents against the freshest recent-window data and
-    # flags (dashboard only) any whose genome has drifted out of sync - it
-    # never kills, culls, or re-ranks anything; the live do-or-die mechanic
-    # and active-trader selection are completely unchanged by this. See
+    # flags (dashboard) any whose genome has drifted out of sync. It never
+    # touches an agent's stored status or fitness, and never kills or culls
+    # anyone - the live do-or-die mechanic is completely unchanged by this.
+    # It DOES apply a ranking-only penalty (see revalidation_drift_penalty_factor
+    # below and Population._effective_rank_score) when choosing active/live
+    # traders each cycle, so a drifted agent can lose its slot without its
+    # underlying fitness number or dashboard history being altered. See
     # agents/population.py::revalidate_top_agents.
     revalidation_enabled: bool = _bool("REVALIDATION_ENABLED", True)
     revalidation_interval_cycles: int = int(os.getenv("REVALIDATION_INTERVAL_CYCLES", "20"))
     revalidation_agent_limit: int = int(os.getenv("REVALIDATION_AGENT_LIMIT", "50"))
     # A re-backtest score below this is flagged as "drifted" on the dashboard.
     revalidation_drift_threshold: float = float(os.getenv("REVALIDATION_DRIFT_THRESHOLD", "-5.0"))
+    # Ranking-only penalty applied per point a drifted agent's revalidation
+    # score falls below the threshold above - e.g. scoring -15 against a
+    # -5.0 threshold (10 points past it) loses 10*this many points off its
+    # EFFECTIVE rank score used for active/live-trader slot selection only
+    # (see Population._effective_rank_score). Proportional rather than a
+    # hard exclude, since revalidation runs on a sample and a hard cutoff
+    # right at the threshold would be noisy.
+    revalidation_drift_penalty_factor: float = float(os.getenv("REVALIDATION_DRIFT_PENALTY_FACTOR", "2.0"))
     # The recent-window backtest data (used both for new-agent screening and
     # for revalidation above) is only ever fetched once at startup otherwise -
     # stale after the first few hours of a long-running deployment. Refetched

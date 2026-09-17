@@ -46,10 +46,10 @@ BOUNDS = {
     "stoch_k_smooth": (2, 5),
     "stoch_rsi_oversold": (10.0, 30.0),
     "stoch_rsi_overbought": (70.0, 90.0),
-    "stop_loss_pct": (1.0, 5.0),
-    "take_profit_pct": (2.0, 12.0),
+    "stop_loss_pct": (1.0, 8.0),
+    "take_profit_pct": (2.0, 22.0),
     "max_hold_hours": (12, 96),
-    "position_size_pct": (2.0, 15.0),        # % of agent balance risked as notional
+    "position_size_pct": (2.0, 25.0),        # % of agent balance risked as notional
 }
 
 # Fields where two values must stay ordered (lo < hi) - handled specially in

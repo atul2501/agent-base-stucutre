@@ -309,6 +309,28 @@ class Database:
         ).fetchone()
         return json.loads(row["genome_json"]) if row else None
 
+    # ---- hall of fame (exact-genome preservation, unlike strategy_shares) ----
+
+    def get_max_hall_of_fame_fitness(self) -> float:
+        row = self.conn.execute("SELECT MAX(fitness) AS m FROM hall_of_fame").fetchone()
+        return row["m"] if row and row["m"] is not None else 0.0
+
+    def record_hall_of_fame(self, source_agent_id: int, genome: dict, win_streak: int,
+                             total_pnl: float, fitness: float, reason: str) -> None:
+        self.conn.execute(
+            """INSERT INTO hall_of_fame
+               (source_agent_id, genome_json, win_streak, total_pnl, fitness, recorded_at, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (source_agent_id, json.dumps(genome), win_streak, total_pnl, fitness, now_iso(), reason),
+        )
+        self.conn.commit()
+
+    def sample_hall_of_fame_genome(self) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT genome_json FROM hall_of_fame ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
+        return json.loads(row["genome_json"]) if row else None
+
     # ---- population cycle log ----
 
     def record_population_cycle(
