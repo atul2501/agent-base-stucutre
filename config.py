@@ -224,6 +224,15 @@ class Config:
     # --- storage ---
     db_path: str = os.getenv("DB_PATH", "db/trading_agents.db")
 
+    # --- logging ---
+    # Log files (logs/agent_swarm.log + its rotated .1/.2/.3 backups, plus
+    # systemd.log/systemd-error.log if run under systemd) older than this
+    # are deleted automatically - see main.py::_cleanup_old_logs. Runs once
+    # at startup and once per hour while running, so a long-lived deployment
+    # doesn't need an external logrotate/cron job to avoid unbounded disk
+    # growth.
+    log_max_age_hours: float = float(os.getenv("LOG_MAX_AGE_HOURS", "48"))
+
     # --- dashboard ---
     dashboard_host: str = os.getenv("DASHBOARD_HOST", "127.0.0.1")
     dashboard_port: int = int(os.getenv("DASHBOARD_PORT", "8000"))

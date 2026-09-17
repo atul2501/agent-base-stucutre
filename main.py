@@ -49,6 +49,29 @@ from trading.live_executor import LiveExecutor
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+
+def cleanup_old_logs(log_dir: Path, max_age_hours: float) -> None:
+    """Deletes any file in log_dir last modified more than max_age_hours ago
+    - covers agent_swarm.log's rotated .1/.2/.3 backups (RotatingFileHandler
+    only caps them by COUNT, not age) and, if this runs under systemd with
+    output redirected to logs/systemd*.log, those too, since nothing else
+    in this codebase ever rotates or cleans those. Never touches the
+    currently-active agent_swarm.log itself even if it's old, since deleting
+    a file a live logging.FileHandler still has open would just create an
+    orphaned inode - RotatingFileHandler's own size-based rotation already
+    handles that file's lifecycle."""
+    cutoff = time.time() - max_age_hours * 3600
+    active_log = (log_dir / "agent_swarm.log").resolve()
+    for f in log_dir.glob("*.log*"):
+        try:
+            if f.resolve() == active_log:
+                continue
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass  # best-effort - a log file mid-write/deleted concurrently isn't worth crashing over
+
+
 _file_handler = RotatingFileHandler(LOG_DIR / "agent_swarm.log", maxBytes=5_000_000, backupCount=3)
 _file_handler.setLevel(logging.INFO)
 _file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
@@ -59,6 +82,8 @@ _console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(m
 
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 log = logging.getLogger("main")
+
+cleanup_old_logs(LOG_DIR, CONFIG.log_max_age_hours)
 
 
 def parse_args() -> argparse.Namespace:
@@ -259,11 +284,19 @@ def main() -> None:
             threading.Thread(target=run_dashboard, args=(CONFIG,), daemon=True).start()
             log.info("Dashboard: http://%s:%d", CONFIG.dashboard_host, CONFIG.dashboard_port)
 
+        last_log_cleanup = time.monotonic()
         while True:
             try:
                 orchestrator.run_cycle()
             except Exception:
                 log.exception("Cycle %d failed - will retry next interval", orchestrator.cycle)
+            # Startup alone only catches restarts - a long-lived process that
+            # never restarts still needs this so logs older than
+            # log_max_age_hours get cleaned up while running, not just
+            # accumulate forever until the next restart.
+            if time.monotonic() - last_log_cleanup >= 3600:
+                cleanup_old_logs(LOG_DIR, CONFIG.log_max_age_hours)
+                last_log_cleanup = time.monotonic()
             time.sleep(CONFIG.cycle_seconds)
     except KeyboardInterrupt:
         # Fires on Ctrl+C (SIGINT) or a stop signal (SIGTERM, e.g. `kill`,
