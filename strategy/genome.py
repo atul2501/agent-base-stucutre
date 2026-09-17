@@ -10,6 +10,7 @@ what mutation perturbs when a winner spawns children.
 from __future__ import annotations
 
 import copy
+import math
 import random
 from dataclasses import asdict, dataclass
 
@@ -55,6 +56,34 @@ BOUNDS = {
 # Fields where two values must stay ordered (lo < hi) - handled specially in
 # random()/mutate() rather than mutated independently like the rest.
 _ORDERED_PAIRS = [("ema_fast", "ema_slow"), ("min_atr_pct", "max_atr_pct")]
+
+# Minimum take_profit_pct:stop_loss_pct ratio - without this, SL/TP are drawn
+# fully independently and can land on genomes needing an improbable win rate
+# just to break even (e.g. SL=7%, TP=2.5%). 1.5x keeps the breakeven win rate
+# around ~40% and stays feasible across the whole BOUNDS grid: at the worst
+# case stop_loss_pct=8.0 (its max), the floor is take_profit_pct>=12.0, still
+# comfortably under take_profit_pct's own 22.0 ceiling.
+_MIN_TP_SL_RATIO = 1.5
+
+
+def _enforce_tp_sl_ratio(stop_loss_pct: float, take_profit_pct: float) -> tuple[float, float]:
+    """Returns (stop_loss_pct, take_profit_pct): stop_loss_pct clamped into
+    its own BOUNDS first (so the ratio floor below is always achievable even
+    from a corrupted/out-of-bounds input, e.g. a hand-edited genome dict),
+    then take_profit_pct bumped up if needed so it's >=
+    _MIN_TP_SL_RATIO * stop_loss_pct. Same compute-then-clamp-the-dependent-
+    field pattern as _ORDERED_PAIRS.
+
+    Uses ceil (not round) for the 2-decimal floor: round() can land BELOW
+    the true product for values like 4.85 * 1.5 = 7.275, which floats
+    represent as 7.2749999999999995 and round() then rounds down to 7.27 -
+    silently violating the invariant it's meant to enforce.
+    """
+    lo, hi = BOUNDS["stop_loss_pct"]
+    stop_loss_pct = max(lo, min(hi, stop_loss_pct))
+    min_tp = math.ceil(stop_loss_pct * _MIN_TP_SL_RATIO * 100) / 100
+    take_profit_pct = max(take_profit_pct, min(min_tp, BOUNDS["take_profit_pct"][1]))
+    return stop_loss_pct, take_profit_pct
 
 
 @dataclass
@@ -111,6 +140,7 @@ class Genome:
             d["ema_slow"] = d["ema_fast"] + 5
         if d["max_atr_pct"] <= d["min_atr_pct"]:
             d["max_atr_pct"] = round(d["min_atr_pct"] + 0.1, 4)
+        d["stop_loss_pct"], d["take_profit_pct"] = _enforce_tp_sl_ratio(d["stop_loss_pct"], d["take_profit_pct"])
         return cls(**d)
 
     @classmethod
@@ -123,6 +153,9 @@ class Genome:
         ema_slow = max(int(u("ema_slow")), ema_fast + 5)
         min_atr_pct = round(u("min_atr_pct"), 4)
         max_atr_pct = max(round(u("max_atr_pct"), 4), min_atr_pct + 0.1)
+        stop_loss_pct, take_profit_pct = _enforce_tp_sl_ratio(
+            round(u("stop_loss_pct"), 2), round(u("take_profit_pct"), 2)
+        )
 
         return cls(
             coin=coin,
@@ -155,8 +188,8 @@ class Genome:
             stoch_k_smooth=int(u("stoch_k_smooth")),
             stoch_rsi_oversold=round(u("stoch_rsi_oversold"), 1),
             stoch_rsi_overbought=round(u("stoch_rsi_overbought"), 1),
-            stop_loss_pct=round(u("stop_loss_pct"), 2),
-            take_profit_pct=round(u("take_profit_pct"), 2),
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
             max_hold_hours=round(u("max_hold_hours"), 1),
             position_size_pct=round(u("position_size_pct"), 2),
         )
@@ -187,6 +220,9 @@ class Genome:
             child.ema_slow = child.ema_fast + 5
         if child.max_atr_pct <= child.min_atr_pct:
             child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
+        child.stop_loss_pct, child.take_profit_pct = _enforce_tp_sl_ratio(
+            child.stop_loss_pct, child.take_profit_pct
+        )
 
         return child
 
@@ -205,5 +241,8 @@ class Genome:
             child.ema_slow = child.ema_fast + 5
         if child.max_atr_pct <= child.min_atr_pct:
             child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
+        child.stop_loss_pct, child.take_profit_pct = _enforce_tp_sl_ratio(
+            child.stop_loss_pct, child.take_profit_pct
+        )
 
         return child

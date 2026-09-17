@@ -266,18 +266,6 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
         score -= 1
         reasons.append(f"24h change {f.daily_change_pct:.2f}% fights the daily trend")
 
-    # Higher-timeframe trend: trading against the bigger trend is a
-    # stronger red flag than most single confirmations, so disagreement
-    # costs 2 instead of the usual 1. None (unknown/backtest) is neutral.
-    if f.htf_trend_up is not None:
-        htf_agrees = f.htf_trend_up if candidate == "long" else not f.htf_trend_up
-        if htf_agrees:
-            score += 1
-            reasons.append(f"higher-timeframe trend agrees with {candidate}")
-        else:
-            score -= 2
-            reasons.append(f"higher-timeframe trend fights {candidate} - trading against the bigger trend")
-
     # Bollinger %B: near the band on your side of the trade confirms (bands
     # aren't symmetric around zero like the signals above, so this is
     # written explicitly per direction rather than via the sign trick).
@@ -311,6 +299,22 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
         elif f.stoch_rsi_k <= genome.stoch_rsi_oversold:
             score -= 1
             reasons.append(f"StochRSI oversold ({f.stoch_rsi_k:.1f}) - contradicts")
+
+    # Higher-timeframe trend hard veto: unlike every other confirmation
+    # above, disagreement here isn't a score penalty - it's a full veto,
+    # since trading against the bigger trend is qualitatively different
+    # from one indicator disagreeing. None (unknown/backtest - see
+    # compute_htf_trend and backtest/engine.py) stays neutral, same as
+    # before. Runs last so `reasons`/`score` still document the full
+    # setup that got vetoed.
+    if f.htf_trend_up is not None:
+        htf_agrees = f.htf_trend_up if candidate == "long" else not f.htf_trend_up
+        if htf_agrees:
+            score += 1
+            reasons.append(f"higher-timeframe trend agrees with {candidate}")
+        else:
+            reasons.append(f"higher-timeframe trend fights {candidate} - vetoed, trading against the bigger trend")
+            return Signal("hold", 0.0, score, reasons, ambiguous=False)
 
     # Up to 11 confirmation dimensions now (order book, OI, funding, premium,
     # volume, VWAP, MACD, daily momentum, Bollinger, StochRSI, higher-
@@ -356,7 +360,7 @@ def council_consult(
             short_votes += 1
 
     active = long_votes + short_votes
-    if active < min_active_voters:
+    if active < max(min_active_voters, 1):
         return candidate
 
     agree = long_votes if candidate.action == "long" else short_votes
