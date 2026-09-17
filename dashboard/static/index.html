@@ -550,6 +550,9 @@ tbody tr:last-child td {
 }
 
 .lineage-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 4px 8px;
   border-radius: 3px;
   background: var(--surface-2);
@@ -565,6 +568,52 @@ tbody tr:last-child td {
 .status-dot {
   width: 5px;
   height: 5px;
+  display: inline-block;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.status-dot.alive { background: var(--green); }
+.status-dot.dead { background: var(--red); }
+
+.lineage-node.lg-dead {
+  background: rgba(239,105,119,.09);
+  border-color: rgba(239,105,119,.5);
+}
+
+.lineage-node.lg-dead .lg-id {
+  color: #f18a95;
+  text-decoration: line-through;
+}
+
+.lineage-node.lg-dead .lg-stat { color: #d9808c; }
+
+.lg-dead-label {
+  padding: 2px 4px;
+  border: 1px solid rgba(239,105,119,.5);
+  color: #f18a95;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  line-height: 1;
+}
+
+.lineage-unbranched-dead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.lineage-unbranched-dead__label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
 }
 
 .lineage-node .lg-gen {
@@ -1149,6 +1198,7 @@ function strategyExplain(genomeJson) {
 function lineageNodeHtml(a) {
   const dead = a.status === 'dead';
   const proTag = a.tier === 'professional' ? '<span class="lg-pro">PRO</span>' : '';
+  const deadTag = dead ? '<span class="lg-dead-label">DEAD</span>' : '';
   const stat = dead
     ? `died ${ago(a.died_at)} &middot; ${a.trades_count} trade${a.trades_count===1?'':'s'}`
     : `${a.wins}W/${a.losses}L &middot; ${a.trades_count} trade${a.trades_count===1?'':'s'} &middot; `
@@ -1158,6 +1208,7 @@ function lineageNodeHtml(a) {
     + `<span class="lg-id">#${a.id}</span>`
     + `<span class="lg-gen">gen ${a.generation}</span>`
     + proTag
+    + deadTag
     + `<span class="lg-stat">${stat}</span>`
     + `</span>`;
 }
@@ -1186,20 +1237,28 @@ function renderLineageForest(agents) {
   });
   const roots = agents.filter(a => a.parent_id === null || a.parent_id === undefined);
   const familyRoots = roots.filter(r => childrenOf.has(r.id));
-  const soloCount = roots.length - familyRoots.length;
+  const soloRoots = roots.filter(r => !childrenOf.has(r.id));
+  const aliveSoloCount = soloRoots.filter(r => r.status !== 'dead').length;
+  const deadSoloRoots = soloRoots.filter(r => r.status === 'dead');
 
   if (!familyRoots.length) {
-    el.innerHTML = `<div class="empty">No one has bred yet - ${soloCount} seed agent${soloCount === 1 ? '' : 's'} still waiting on a first win.</div>`;
+    const deadAgents = deadSoloRoots.length
+      ? `<div class="lineage-unbranched-dead"><span class="lineage-unbranched-dead__label">Dead seed agents</span>${deadSoloRoots.map(lineageNodeHtml).join('')}</div>`
+      : '';
+    el.innerHTML = `<div class="empty">No one has bred yet - ${aliveSoloCount} seed agent${aliveSoloCount === 1 ? '' : 's'} still waiting on a first win.</div>${deadAgents}`;
     return;
   }
 
   const trees = familyRoots
     .map(r => `<div class="lineage-tree"><ul>${renderLineageNode(r, childrenOf)}</ul></div>`)
     .join('');
-  const note = soloCount
-    ? `<div class="empty" style="text-align:left;padding:10px 2px 0;">+ ${soloCount} other seed agent${soloCount === 1 ? '' : 's'} alive with no children yet (haven't won a trade)</div>`
+  const aliveNote = aliveSoloCount
+    ? `<div class="empty" style="text-align:left;padding:10px 2px 0;">+ ${aliveSoloCount} other seed agent${aliveSoloCount === 1 ? '' : 's'} alive with no children yet (haven't won a trade)</div>`
     : '';
-  el.innerHTML = trees + note;
+  const deadAgents = deadSoloRoots.length
+    ? `<div class="lineage-unbranched-dead"><span class="lineage-unbranched-dead__label">Dead seed agents</span>${deadSoloRoots.map(lineageNodeHtml).join('')}</div>`
+    : '';
+  el.innerHTML = trees + aliveNote + deadAgents;
 }
 
 // Each section renders independently - one section throwing (e.g. a
