@@ -106,6 +106,298 @@
   .lineage-node .lg-stat { color: var(--muted); }
   .lineage-legend { display: flex; gap: 18px; font-size: 12px; color: var(--muted); margin-bottom: 12px; flex-wrap: wrap; }
   .lineage-legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* ===== Professional dashboard refresh ===== */
+  :root {
+    --bg: #080b12;
+    --bg-soft: #0d111a;
+    --panel: #111722;
+    --panel-2: #171e2b;
+    --panel-3: #1c2534;
+    --border: rgba(148,163,184,.14);
+    --border-strong: rgba(148,163,184,.22);
+    --text: #f3f6fb;
+    --muted: #8e9aae;
+    --accent: #5b8cff;
+    --accent-2: #7c5cff;
+    --green: #2bd39b;
+    --red: #ff6277;
+    --amber: #f2bf5b;
+    --purple: #b184ff;
+    --shadow: 0 18px 50px rgba(0,0,0,.24);
+  }
+
+  html { scroll-behavior: smooth; }
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at 10% 0%, rgba(91,140,255,.10), transparent 28%),
+      radial-gradient(circle at 92% 8%, rgba(124,92,255,.08), transparent 25%),
+      linear-gradient(180deg, #080b12 0%, #0a0e16 100%);
+    color: var(--text);
+    padding: 20px 22px 56px;
+    letter-spacing: .01em;
+  }
+
+  .wrap { max-width: 1440px; }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    margin: -20px -22px 20px;
+    padding: 18px 22px 16px;
+    background: rgba(8,11,18,.84);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+
+  h1 {
+    font-size: 22px;
+    font-weight: 750;
+    letter-spacing: -.02em;
+  }
+  h1 span { color: #93a0b5; }
+
+  .badges { gap: 7px; }
+  .badge {
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgba(255,255,255,.035);
+    border-color: var(--border);
+    transition: .2s ease;
+  }
+  .badge:hover {
+    border-color: var(--border-strong);
+    background: rgba(255,255,255,.055);
+  }
+
+  .dashboard-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 0 0 18px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: rgba(17,23,34,.72);
+    box-shadow: 0 8px 30px rgba(0,0,0,.12);
+  }
+  .quick-nav {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .quick-nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 11px;
+    font-weight: 650;
+    padding: 6px 9px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+  }
+  .quick-nav a:hover {
+    color: var(--text);
+    background: var(--panel-2);
+    border-color: var(--border);
+  }
+  .refresh-meta {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .refresh-indicator {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 4px rgba(43,211,155,.10);
+  }
+  .refresh-indicator.error {
+    background: var(--amber);
+    box-shadow: 0 0 0 4px rgba(242,191,91,.10);
+  }
+  #manual-refresh {
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  #manual-refresh:hover { background: var(--panel-3); }
+
+  .grid {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+  .card {
+    position: relative;
+    overflow: hidden;
+    min-height: 108px;
+    background: linear-gradient(145deg, rgba(17,23,34,.98), rgba(13,18,27,.98));
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 17px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.12);
+    transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+  }
+  .card::after {
+    content: "";
+    position: absolute;
+    width: 90px;
+    height: 90px;
+    right: -42px;
+    top: -48px;
+    border-radius: 50%;
+    background: rgba(91,140,255,.09);
+    filter: blur(2px);
+  }
+  .card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(91,140,255,.28);
+    box-shadow: var(--shadow);
+  }
+  .card .label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #8794aa;
+    letter-spacing: .08em;
+  }
+  .card .value {
+    font-size: clamp(23px, 2.1vw, 30px);
+    line-height: 1.15;
+    margin-top: 4px;
+    letter-spacing: -.035em;
+  }
+  .card .sub { font-size: 11px; margin-top: 7px; }
+
+  section {
+    margin-bottom: 20px;
+    scroll-margin-top: 90px;
+  }
+  section h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 750;
+    letter-spacing: .10em;
+    color: #a7b2c5;
+    margin: 0 0 9px;
+  }
+  section h2::before {
+    content: "";
+    width: 3px;
+    height: 13px;
+    border-radius: 99px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  }
+
+  .panel {
+    background: linear-gradient(145deg, rgba(17,23,34,.97), rgba(13,18,27,.97));
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.12);
+  }
+  .chart-wrap { height: 260px; }
+  .viz-legend { margin-bottom: 10px; }
+  .viz-tooltip {
+    background: rgba(23,30,43,.97);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow);
+  }
+
+  table { font-size: 12px; }
+  th {
+    padding: 10px 11px;
+    background: rgba(255,255,255,.018);
+    color: #7f8ca1;
+    font-size: 10px;
+    letter-spacing: .07em;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  td {
+    padding: 10px 11px;
+    border-bottom-color: var(--border);
+  }
+  tbody tr { transition: background .15s ease; }
+  tbody tr:hover { background: rgba(91,140,255,.055); }
+  .table-scroll {
+    border-radius: 10px;
+    scrollbar-width: thin;
+  }
+
+  .flag {
+    font-size: 9px;
+    font-weight: 750;
+    padding: 3px 6px;
+    border-radius: 5px;
+  }
+
+  .gauge-wrap { min-height: 260px; }
+  .gauge-svg-box { width: min(280px, 100%); }
+  .gauge-value { font-size: 44px; }
+  .gauge-components {
+    gap: 12px 28px;
+  }
+  .gauge-components > div {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: rgba(255,255,255,.018);
+  }
+
+  .lineage-node {
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: rgba(23,30,43,.82);
+    border-color: var(--border);
+  }
+
+  #live-section .panel {
+    border-color: rgba(43,211,155,.18);
+    box-shadow: 0 0 0 1px rgba(43,211,155,.025), var(--shadow);
+  }
+
+  #breaker-banner {
+    box-shadow: 0 10px 32px rgba(239,90,111,.10);
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding-top: 18px;
+    font-size: 11px;
+  }
+
+  @media (min-width: 1050px) {
+    #pnlChart, #popChart, #drawdownChart, #winrateChart { height: 280px; }
+    .chart-wrap { height: 280px; }
+  }
+  @media (max-width: 700px) {
+    body { padding: 12px 12px 42px; }
+    header { margin: -12px -12px 14px; padding: 14px 12px; }
+    h1 { font-size: 18px; }
+    .panel { padding: 12px; }
+    .chart-wrap { height: 220px; }
+    .gauge-wrap { display: block; }
+    .gauge-svg-box { margin: 0 auto; }
+    .gauge-components { margin-top: 14px; }
+  }
+
 </style>
 </head>
 <body>
@@ -115,10 +407,28 @@
     <div class="badges" id="badges"></div>
   </header>
 
+
+  <div class="dashboard-toolbar">
+    <nav class="quick-nav" aria-label="Dashboard sections">
+      <a href="#overview">Overview</a>
+      <a href="#analytics">Analytics</a>
+      <a href="#agents">Agents</a>
+      <a href="#trades">Trades</a>
+      <a href="#lineage">Lineage</a>
+    </nav>
+    <div class="refresh-meta">
+      <span class="refresh-indicator" id="refresh-indicator"></span>
+      <span id="refresh-status">Connecting to dashboard API…</span>
+      <button id="manual-refresh" type="button">↻ Refresh</button>
+    </div>
+  </div>
+
   <div id="breaker-banner" style="display:none; margin-bottom:20px; padding:14px 18px; border-radius:10px; background:rgba(239,90,111,0.12); border:1px solid var(--red); color:var(--red); font-weight:600;"></div>
 
-  <div class="grid" id="stat-cards"></div>
+  <div id="overview"></div>
+  <div class="grid" id="stat-cards">
 
+  <div id="analytics">
   <section>
     <h2>PnL by Cycle</h2>
     <div class="panel">
@@ -202,6 +512,8 @@
     </div>
   </section>
 
+  </div>
+
   <section id="live-section" style="display:none">
     <h2>Live Position (Real Money)</h2>
     <div class="panel">
@@ -225,6 +537,7 @@
     </div>
   </section>
 
+  <div id="agents">
   <section>
     <h2>Leaderboard - top 50 by fitness (of up to <span id="lb-cap">500</span> alive)</h2>
     <div class="panel table-scroll">
@@ -241,6 +554,9 @@
     </div>
   </section>
 
+  </div>
+
+  <div id="trades">
   <section>
     <h2>Recent Trades</h2>
     <div class="panel table-scroll">
@@ -258,6 +574,9 @@
     </div>
   </section>
 
+  </div>
+
+  <div id="lineage">
   <section>
     <h2>Family Tree - Who Bred Whom</h2>
     <div class="panel">
@@ -271,7 +590,9 @@
     </div>
   </section>
 
-  <footer>Auto-refreshing every 5s &middot; paper trading unless explicitly armed for live</footer>
+  </div>
+
+  <footer>Live telemetry &middot; Auto-refresh 5s &middot; Paper trading unless explicitly armed for live</footer>
 </div>
 
 <script>
@@ -664,6 +985,27 @@ async function fetchJson(url) {
   return r.json();
 }
 
+
+// Professional UI helpers: refresh state + manual refresh.
+function setRefreshState(ok, message) {
+  const indicator = document.getElementById('refresh-indicator');
+  const status = document.getElementById('refresh-status');
+  if (!indicator || !status) return;
+  indicator.classList.toggle('error', !ok);
+  status.textContent = message;
+}
+
+const manualRefresh = document.getElementById('manual-refresh');
+if (manualRefresh) {
+  manualRefresh.addEventListener('click', async () => {
+    manualRefresh.disabled = true;
+    manualRefresh.textContent = 'Refreshing…';
+    await refresh();
+    manualRefresh.disabled = false;
+    manualRefresh.textContent = '↻ Refresh';
+  });
+}
+
 async function refresh() {
   const endpoints = {
     overview: '/api/overview',
@@ -694,6 +1036,12 @@ async function refresh() {
   });
   lastRefreshOk = !anyFailed;
   lastRefreshAt = Date.now();
+  setRefreshState(
+    lastRefreshOk,
+    lastRefreshOk
+      ? `Updated ${new Date(lastRefreshAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'})}`
+      : `Partial refresh · showing last good data`
+  );
 
   const overview = lastGood.overview;
   const population = lastGood.population;
