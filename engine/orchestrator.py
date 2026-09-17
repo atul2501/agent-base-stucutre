@@ -8,6 +8,7 @@ strategy/genome.py and README.md "one token at a time" design.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from config import Config
 from db.database import Database, now_iso
@@ -72,9 +73,24 @@ class Orchestrator:
                 continue
 
             result, reason = outcome
+            # Approximates total funding paid/received over the hold as the
+            # average of the entry-time and exit-time funding rate * notional
+            # * hours held - live trading only ever observes the CURRENT rate
+            # each cycle, unlike the backtest engine, which has a real
+            # historical funding series to sum exactly (see
+            # backtest/engine.py). Funding was previously used only as an
+            # entry SIGNAL and never actually charged against simulated PnL,
+            # which systematically overstated returns for any hold spanning
+            # a funding interval.
+            opened_at = datetime.fromisoformat(trade_row["opened_at"])
+            hours_held = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600.0
+            avg_funding_rate = (trade_row["entry_funding"] + features.funding) / 2.0
+            funding_cost = trade_row["notional"] * avg_funding_rate * hours_held
+            if trade_row["side"] == "short":
+                funding_cost = -funding_cost
             exit_price, pnl = close_paper_position(
                 trade_row["entry_price"], features.mid_price, trade_row["size"], trade_row["side"],
-                spread_pct=features.spread_pct,
+                spread_pct=features.spread_pct, funding_cost=funding_cost,
             )
             self.db.close_trade(trade_row["id"], exit_price, pnl, result, reason)
 
@@ -125,6 +141,7 @@ class Orchestrator:
                 agent.id, genome.coin, signal.action, fill_price, size, notional,
                 stop_loss, take_profit, entry_reason="; ".join(signal.reasons),
                 regime=classify_regime(features.trend_up, features.adx_value),
+                entry_funding=features.funding,
             )
             log.info("Agent %d opened %s %s @ %.4f (confidence=%.2f) - %s",
                       agent.id, signal.action.upper(), genome.coin, fill_price,

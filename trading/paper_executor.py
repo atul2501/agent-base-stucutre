@@ -35,9 +35,19 @@ def open_paper_position(balance: float, mid_price: float, side: str, position_si
 
 
 def close_paper_position(entry_price: float, mid_price: float, size: float, side: str,
-                          spread_pct: float = 0.0) -> tuple[float, float]:
-    """Returns (exit_fill_price, net_pnl_after_fees)."""
+                          spread_pct: float = 0.0, funding_cost: float = 0.0) -> tuple[float, float]:
+    """Returns (exit_fill_price, net_pnl_after_fees_and_funding).
+
+    `funding_cost` is the caller-computed total funding charged against this
+    trade over its hold (positive = a cost to this position, e.g. a long
+    paying positive funding; negative = a credit, e.g. a short receiving it -
+    see engine/orchestrator.py and backtest/engine.py for how each computes
+    it). Defaults to 0.0, so a caller that hasn't been updated to pass it
+    keeps its exact previous behavior - funding was previously used only as
+    an entry SIGNAL and never actually charged against simulated PnL, which
+    systematically overstated returns for any position held across a funding
+    interval."""
     exit_price = simulate_fill_price(mid_price, side, is_entry=False, spread_pct=spread_pct)
     gross = (exit_price - entry_price) * size if side == "long" else (entry_price - exit_price) * size
     fees = (entry_price * size + exit_price * size) * CONFIG.fee_rate
-    return exit_price, gross - fees
+    return exit_price, gross - fees - funding_cost

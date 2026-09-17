@@ -83,13 +83,16 @@ def _split_train_validation(
 
 def _family(genome: Genome) -> str:
     """Strategy-family bucket for the diversity floor - a simple heuristic
-    combining pullback depth, risk:reward shape, and trend-strictness into a
-    composite key, not a rigorous clustering. A single-axis (pullback-depth
-    only) version let a clone family dominate entirely within one of only
-    two buckets undetected - a genome-quality review flagged this as a real
-    cause of population diversity collapse. Good enough to stop one
-    lineage's style from monopolizing every active-trader slot before a
-    genuinely different style gets a shot."""
+    combining pullback depth, risk:reward shape, trend-strictness, and
+    volume-conviction sensitivity into a composite key, not a rigorous
+    clustering. A single-axis (pullback-depth only) version let a clone
+    family dominate entirely within one of only two buckets undetected - a
+    genome-quality review flagged this as a real cause of population
+    diversity collapse; a 3-axis follow-up review flagged that even that
+    version could still let genomes with wildly different oscillator/volume
+    logic collapse into the same family. Good enough to stop one lineage's
+    style from monopolizing every active-trader slot before a genuinely
+    different style gets a shot."""
     pullback = "deep-pullback" if genome.rsi_oversold <= 25 else "shallow-pullback"
     ratio = genome.take_profit_pct / genome.stop_loss_pct if genome.stop_loss_pct else 0.0
     if ratio < 3.0:
@@ -104,7 +107,8 @@ def _family(genome: Genome) -> str:
         trend = "mid-trend-filter"
     else:
         trend = "strict-trend-filter"
-    return f"{pullback}/{rr}/{trend}"
+    conviction = "low-conviction" if genome.volume_spike_threshold <= 2.0 else "high-conviction"
+    return f"{pullback}/{rr}/{trend}/{conviction}"
 
 
 class Population:
@@ -274,11 +278,16 @@ class Population:
 
     def _pick_breeding_partner(self, exclude_id: int) -> Genome | None:
         """A second parent for crossover - sampled from the current
-        top-fitness agents, excluding the one that just won."""
+        top-fitness agents, excluding the one that just won. Professional-
+        tier agents (a lineage proven across 2 winning generations, not just
+        one lucky trade) sort ahead of standard-tier ones regardless of raw
+        fitness - previously `tier` was purely cosmetic (set on promotion but
+        never read anywhere outside the dashboard), so a lucky one-trade
+        standard agent could crowd out a genuinely proven lineage here."""
         alive = [a for a in self.db.list_alive_agents() if a.id != exclude_id]
         if not alive:
             return None
-        top = sorted(alive, key=lambda a: a.fitness, reverse=True)[:10]
+        top = sorted(alive, key=lambda a: (a.tier == "professional", a.fitness), reverse=True)[:10]
         partner = self.rng.choice(top)
         return Genome.from_dict(partner.genome)
 
@@ -309,9 +318,11 @@ class Population:
     def council_genomes(self, exclude_id: int) -> list[Genome]:
         """The current top-fitness alive agents' own genomes (excluding the
         one asking) - an ensemble "second opinion" panel for an ambiguous
-        signal. See strategy/signals.py::council_consult."""
+        signal. See strategy/signals.py::council_consult. Professional-tier
+        agents sort ahead of standard-tier ones regardless of raw fitness -
+        see _pick_breeding_partner for why."""
         alive = [a for a in self.db.list_alive_agents() if a.id != exclude_id]
-        top = sorted(alive, key=lambda a: a.fitness, reverse=True)[: self.config.council_size]
+        top = sorted(alive, key=lambda a: (a.tier == "professional", a.fitness), reverse=True)[: self.config.council_size]
         return [Genome.from_dict(a.genome) for a in top]
 
     def _maybe_record_hall_of_fame(self, agent: AgentRow) -> None:
@@ -512,16 +523,29 @@ class Population:
         self.db.set_active_traders({a.id for a in top_traders})
 
         # Live capital only ever goes to the most proven subset of the
-        # already-proven top traders - see trading/live_executor.py. Re-sorted
-        # by effective (drift-penalized) score rather than sliced in
+        # already-proven top traders - see trading/live_executor.py.
+        # Professional-tier agents (survived past a single-trade do-or-die
+        # noise floor into a 2-winning-generation-proven lineage) fill live
+        # slots first, regardless of raw fitness; standard-tier agents only
+        # backfill remaining slots if there aren't enough professional-tier
+        # agents yet, so live trading isn't left completely empty this early
+        # in the population's life (count_professional() is currently 0 - no
+        # lineage has reached professional tier yet). Each tier group is
+        # itself sorted by effective (drift-penalized) score rather than
         # top_traders' existing order, since newcomer/longest-benched/
-        # diversity-floor slots can append agents out of fitness order -
-        # this ensures live capital specifically avoids a drifted agent
-        # even if one ended up elsewhere in top_traders.
+        # diversity-floor slots can append agents out of fitness order - this
+        # ensures live capital specifically avoids a drifted agent even if
+        # one ended up elsewhere in top_traders.
         if self.config.is_live():
-            top_live = sorted(top_traders, key=self._effective_rank_score, reverse=True)[
-                : self.config.live_active_trader_count
-            ]
+            professional = sorted(
+                (a for a in top_traders if a.tier == "professional"),
+                key=self._effective_rank_score, reverse=True,
+            )
+            standard = sorted(
+                (a for a in top_traders if a.tier != "professional"),
+                key=self._effective_rank_score, reverse=True,
+            )
+            top_live = (professional + standard)[: self.config.live_active_trader_count]
             self.db.set_live_traders({a.id for a in top_live})
         else:
             self.db.set_live_traders(set())

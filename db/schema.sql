@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS trades (
     entry_reason TEXT,
     exit_reason TEXT,
     regime TEXT,                                 -- trending-up | trending-down | ranging, at entry
+    entry_funding REAL DEFAULT 0.0,              -- funding rate in effect at entry, for approximating hold cost at close
     opened_at TEXT NOT NULL,
     closed_at TEXT,
     FOREIGN KEY (agent_id) REFERENCES agents(id)

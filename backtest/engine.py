@@ -47,6 +47,7 @@ class BacktestResult:
     losses: int
     win_rate: float
     return_pct: float  # total simulated PnL / starting balance * 100
+    max_drawdown_pct: float = 0.0  # largest peak-to-trough drop in simulated balance
 
 
 def _min_required_candles(genome: Genome) -> int:
@@ -159,6 +160,8 @@ def backtest_genome(
     timestamps = [c["t"] for c in candles]
 
     balance = starting_balance
+    peak_balance = starting_balance
+    max_drawdown_pct = 0.0
     wins = losses = 0
     position: dict | None = None
 
@@ -172,14 +175,38 @@ def backtest_genome(
             sig = evaluate_entry(genome, f)
             if sig.action in ("long", "short"):
                 fill_price, size, _notional = open_paper_position(balance, price, sig.action, genome.position_size_pct)
+                # Index into funding_points as of entry - only funding events
+                # AFTER this one accrue against the position (see below).
+                last_funding_idx = (max(0, bisect.bisect_right(series.funding_times, ts_ms) - 1)
+                                     if series.funding_points else -1)
                 position = {"side": sig.action, "entry_price": fill_price, "size": size,
-                            "opened_at": now.isoformat()}
+                            "opened_at": now.isoformat(), "last_funding_idx": last_funding_idx,
+                            "funding_accrued": 0.0}
         else:
+            # Funding accrual: a real historical funding series exists here
+            # (unlike live, which only ever sees the current rate), so this
+            # walks every funding event actually crossed during the hold and
+            # charges/credits it against the position's notional at the time -
+            # exact, not an approximation. Standard perpetual convention: a
+            # positive rate is paid BY longs TO shorts.
+            if series.funding_points:
+                current_idx = max(0, bisect.bisect_right(series.funding_times, ts_ms) - 1)
+                while position["last_funding_idx"] < current_idx:
+                    position["last_funding_idx"] += 1
+                    rate = series.funding_points[position["last_funding_idx"]][1]
+                    cost = position["size"] * price * rate
+                    position["funding_accrued"] += cost if position["side"] == "long" else -cost
             outcome = evaluate_exit(genome, position, f, now=now)
             if outcome is not None:
                 result, _reason = outcome
-                _exit_price, pnl = close_paper_position(position["entry_price"], price, position["size"], position["side"])
+                _exit_price, pnl = close_paper_position(
+                    position["entry_price"], price, position["size"], position["side"],
+                    funding_cost=position["funding_accrued"],
+                )
                 balance += pnl
+                peak_balance = max(peak_balance, balance)
+                if peak_balance > 0:
+                    max_drawdown_pct = max(max_drawdown_pct, (peak_balance - balance) / peak_balance * 100.0)
                 if result == "win":
                     wins += 1
                 else:
@@ -189,7 +216,23 @@ def backtest_genome(
     trades = wins + losses
     win_rate = wins / trades if trades else 0.0
     return_pct = (balance - starting_balance) / starting_balance * 100.0
-    return BacktestResult(trades=trades, wins=wins, losses=losses, win_rate=win_rate, return_pct=return_pct)
+    return BacktestResult(trades=trades, wins=wins, losses=losses, win_rate=win_rate,
+                           return_pct=return_pct, max_drawdown_pct=max_drawdown_pct)
+
+
+# How much a single point of max intra-backtest drawdown % costs in fitness -
+# calibrated so a severe (~20%) drawdown costs about as much as the win-rate
+# term's entire possible contribution (10.0 at a 100% win rate), making
+# drawdown a real, comparably-weighted consideration rather than a token one.
+_DRAWDOWN_PENALTY_WEIGHT = 0.5
+
+# Shrinks a small-sample win_rate toward a neutral 50% baseline before it
+# feeds fitness_score - equivalent to adding ~5 "virtual" trades split evenly
+# between win/loss as a prior. Without this, a lucky 2-trade genome (e.g.
+# 2/2 wins) scores identically to a proven 20-trade one on the win_rate term,
+# despite the former being statistically almost uninformative.
+_WIN_RATE_PRIOR_TRADES = 5.0
+_WIN_RATE_PRIOR_WINS = 2.5
 
 
 def fitness_score(result: BacktestResult) -> float:
@@ -197,7 +240,15 @@ def fitness_score(result: BacktestResult) -> float:
     genomes. Needs at least a couple of trades to mean anything - an
     untested genome (0 trades) scores strictly below any tested one so a
     genome that never once found a setup in ~17 days of history doesn't
-    win by default against one that traded and lost narrowly."""
+    win by default against one that traded and lost narrowly.
+
+    Risk-adjusted: penalizes max_drawdown_pct so a volatile/streaky genome
+    doesn't outrank a steadier one purely on total return, and shrinks
+    win_rate toward 50% for small trade counts so a couple of lucky wins
+    can't masquerade as a proven high win rate."""
     if result.trades == 0:
         return -1.0
-    return result.return_pct + result.win_rate * 10.0
+    shrunk_win_rate = (result.wins + _WIN_RATE_PRIOR_WINS) / (result.trades + _WIN_RATE_PRIOR_TRADES)
+    return (result.return_pct
+            + shrunk_win_rate * 10.0
+            - result.max_drawdown_pct * _DRAWDOWN_PENALTY_WEIGHT)

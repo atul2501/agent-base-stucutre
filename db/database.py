@@ -94,6 +94,15 @@ class Database:
         if "regime" not in existing_cols:
             self.conn.execute("ALTER TABLE trades ADD COLUMN regime TEXT")
             self.conn.commit()
+        if "entry_funding" not in existing_cols:
+            # The funding rate in effect at entry - used at close time to
+            # approximate total funding paid/received over the hold (average
+            # of entry and exit rate * notional * hours held). NULL/0.0 for
+            # existing open trades predating this column just means their
+            # funding cost is approximated as 0 for whatever portion of the
+            # hold already elapsed - not retroactively knowable.
+            self.conn.execute("ALTER TABLE trades ADD COLUMN entry_funding REAL DEFAULT 0.0")
+            self.conn.commit()
 
         agent_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(agents)")}
         if "revalidation_score" not in agent_cols:
@@ -267,14 +276,15 @@ class Database:
         take_profit: float,
         entry_reason: str,
         regime: str | None = None,
+        entry_funding: float = 0.0,
     ) -> int:
         cur = self.conn.execute(
             """INSERT INTO trades
                (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
-                entry_reason, regime, opened_at, result)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                entry_reason, regime, entry_funding, opened_at, result)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
             (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
-             entry_reason, regime, now_iso()),
+             entry_reason, regime, entry_funding, now_iso()),
         )
         self.conn.commit()
         return cur.lastrowid

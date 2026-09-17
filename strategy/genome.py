@@ -49,7 +49,7 @@ BOUNDS = {
     "stoch_rsi_overbought": (70.0, 90.0),
     "stop_loss_pct": (1.0, 5.0),
     "take_profit_pct": (2.0, 22.0),
-    "max_hold_hours": (12, 96),
+    "max_hold_hours": (12, 48),
     "position_size_pct": (2.0, 25.0),        # % of agent balance risked as notional
 }
 
@@ -125,13 +125,18 @@ def _resample_tp_sl_ratio(rng: random.Random, stop_loss_pct: float, take_profit_
 
 
 def _enforce_hold_window(take_profit_pct: float, max_hold_hours: float) -> float:
-    """Returns max_hold_hours, bumped up if needed so it isn't too short for
-    the genome's own take_profit_pct to plausibly be reached - the "big
-    target, short hold window" incoherence a genome-quality review flagged.
-    Never lowers max_hold_hours, so a genome that already gives itself a
-    long window keeps it even for a tiny target."""
+    """Returns max_hold_hours: first clamped into its own BOUNDS (so a value
+    from before BOUNDS["max_hold_hours"] was tightened, or any other
+    corrupted/out-of-bounds input, can't stay stuck above the current
+    ceiling), then bumped up if it's too short for the genome's own
+    take_profit_pct to plausibly be reached - the "big target, short hold
+    window" incoherence a genome-quality review flagged. Only ever raises the
+    clamped value, so a genome that already gives itself a long window keeps
+    it even for a tiny target."""
+    lo, hi = BOUNDS["max_hold_hours"]
+    max_hold_hours = max(lo, min(hi, max_hold_hours))
     min_hold = take_profit_pct * _MIN_HOLD_HOURS_PER_TP_PCT
-    return max(max_hold_hours, min(min_hold, BOUNDS["max_hold_hours"][1]))
+    return max(max_hold_hours, min(min_hold, hi))
 
 
 def genome_distance(g1: "Genome", g2: "Genome") -> float:
