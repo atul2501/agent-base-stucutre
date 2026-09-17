@@ -144,14 +144,19 @@ class Config:
     # before it's had a chance to prove out.
     diversity_floor_enabled: bool = _bool("DIVERSITY_FLOOR_ENABLED", True)
     win_streak_share_threshold: int = int(os.getenv("WIN_STREAK_SHARE_THRESHOLD", "8"))
-    # Unlike strategy_shares above (always mutated before reuse), floor-refill
-    # candidates drawn from hall_of_fame at this rate are used UNMUTATED - a
-    # real (not just probable) shot at reinstating a genuinely all-time-best
-    # genome exactly, since do-or-die means even that genome's original
-    # agent eventually dies on one loss like anyone else. Still screened by
-    # the same backtest candidate selection as every other new agent, not
-    # committed blind.
-    hall_of_fame_exact_clone_rate: float = float(os.getenv("HALL_OF_FAME_EXACT_CLONE_RATE", "0.25"))
+    # Floor-refill candidates drawn from hall_of_fame at this rate get a real
+    # (not just probable) shot at reinstating a genuinely all-time-best
+    # genome's lineage, since do-or-die means even that genome's original
+    # agent eventually dies on one loss like anyone else. Lightly mutated
+    # (not used bit-for-bit unmutated) before competing in _pick_best - a
+    # genome-quality review found repeated unmutated HOF draws were the
+    # direct cause of exact-duplicate clone clusters in the population;
+    # a small mutation keeps the near-peak "shot" without ever stamping out
+    # a second bit-for-bit copy of an already-alive agent. Also lowered from
+    # a prior 0.25 default for the same reason - still screened by the same
+    # backtest candidate selection as every other new agent, not committed
+    # blind.
+    hall_of_fame_exact_clone_rate: float = float(os.getenv("HALL_OF_FAME_EXACT_CLONE_RATE", "0.10"))
     initial_population: int = int(os.getenv("INITIAL_POPULATION", "40"))
     starting_paper_balance: float = float(os.getenv("STARTING_PAPER_BALANCE", "1000"))
     # Folder of hand-picked agent genomes (see `python3 main.py --snapshot-best`)

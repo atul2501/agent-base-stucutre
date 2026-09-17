@@ -34,9 +34,18 @@ from pathlib import Path
 from backtest.engine import backtest_genome, fitness_score
 from config import Config
 from db.database import AgentRow, Database
-from strategy.genome import Genome
+from strategy.genome import Genome, genome_distance
 
 log = logging.getLogger(__name__)
+
+# Small nudge added to a candidate's backtest score in _pick_best, weighted
+# by how far it sits (0.0=identical, ~1.0=opposite on every field) from its
+# nearest already-alive neighbor. fitness_score commonly spans tens of
+# points, so this is meant to break ties/near-ties toward genuine diversity,
+# not to override a real fitness edge - a genome-quality review found
+# repeated near-duplicate clone clusters in the population and traced part
+# of the cause to _pick_best having zero awareness of what's already alive.
+_DIVERSITY_BONUS_WEIGHT = 2.0
 
 
 def _idle_hours(agent: AgentRow) -> float:
@@ -73,11 +82,29 @@ def _split_train_validation(
 
 
 def _family(genome: Genome) -> str:
-    """Coarse strategy-family split for the diversity floor - a simple
-    heuristic on how deep a pullback this agent waits for, not a rigorous
-    clustering. Good enough to stop one lineage's style from monopolizing
-    every active-trader slot before a genuinely different style gets a shot."""
-    return "deep-value" if genome.rsi_oversold <= 25 else "momentum-moderate"
+    """Strategy-family bucket for the diversity floor - a simple heuristic
+    combining pullback depth, risk:reward shape, and trend-strictness into a
+    composite key, not a rigorous clustering. A single-axis (pullback-depth
+    only) version let a clone family dominate entirely within one of only
+    two buckets undetected - a genome-quality review flagged this as a real
+    cause of population diversity collapse. Good enough to stop one
+    lineage's style from monopolizing every active-trader slot before a
+    genuinely different style gets a shot."""
+    pullback = "deep-pullback" if genome.rsi_oversold <= 25 else "shallow-pullback"
+    ratio = genome.take_profit_pct / genome.stop_loss_pct if genome.stop_loss_pct else 0.0
+    if ratio < 3.0:
+        rr = "tight-rr"
+    elif ratio < 5.0:
+        rr = "mid-rr"
+    else:
+        rr = "wide-rr"
+    if genome.min_adx <= 17.0:
+        trend = "loose-trend-filter"
+    elif genome.min_adx <= 24.0:
+        trend = "mid-trend-filter"
+    else:
+        trend = "strict-trend-filter"
+    return f"{pullback}/{rr}/{trend}"
 
 
 class Population:
@@ -124,16 +151,25 @@ class Population:
         Scores against the held-out VALIDATION slice (the later ~30% of the
         recent window) rather than the full window when there's enough data
         to split - see _split_train_validation for why. Falls back to the
-        full window when there isn't (e.g. a short BACKTEST_LOOKBACK_HOURS)."""
+        full window when there isn't (e.g. a short BACKTEST_LOOKBACK_HOURS).
+
+        Also adds a small diversity bonus (_DIVERSITY_BONUS_WEIGHT) based on
+        each candidate's distance from its nearest already-alive genome, so
+        a candidate that's a near-duplicate of an existing agent doesn't win
+        by default over an equally-fit but genuinely distinct alternative."""
         if not self.config.backtest_enabled or not self.backtest_candles or len(candidates) == 1:
             return candidates[0]
         score_candles = self.validation_candles or self.backtest_candles
         score_funding = self.validation_funding if self.validation_candles else self.backtest_funding
+        alive_genomes = [Genome.from_dict(a.genome) for a in self.db.list_alive_agents()]
         best_genome, best_score = candidates[0], None
         for genome in candidates:
             result = backtest_genome(genome, score_candles, score_funding,
                                       starting_balance=self.config.starting_paper_balance)
             score = fitness_score(result) + self._regime_consistency_score(genome)
+            if alive_genomes:
+                nearest = min(genome_distance(genome, other) for other in alive_genomes)
+                score += nearest * _DIVERSITY_BONUS_WEIGHT
             if best_score is None or score > best_score:
                 best_genome, best_score = genome, score
         return best_genome
@@ -213,15 +249,18 @@ class Population:
             candidates = []
             for _ in range(self.config.backtest_candidates):
                 # A real (not just probable) shot at reinstating a genuinely
-                # all-time-best genome EXACTLY, unmutated - strategy_shares
-                # below is always mutated before reuse, so a proven peak
-                # genome otherwise only ever gets tested as a derivative of
-                # itself, never itself again. Still screened by _pick_best
-                # against held-out data below, not committed blind.
+                # all-time-best genome's lineage - strategy_shares below is
+                # always mutated before reuse, so a proven peak genome
+                # otherwise only ever gets tested as a derivative of itself,
+                # never itself again. Lightly mutated (not used bit-for-bit)
+                # so repeated draws can't stamp out a second exact copy of an
+                # already-alive agent - see config.py's
+                # hall_of_fame_exact_clone_rate comment. Still screened by
+                # _pick_best against held-out data below, not committed blind.
                 hof = (self.db.sample_hall_of_fame_genome()
                        if self.rng.random() < self.config.hall_of_fame_exact_clone_rate else None)
                 if hof:
-                    candidates.append(Genome.from_dict(hof))
+                    candidates.append(Genome.from_dict(hof).mutate(self.rng, mutation_rate=0.1))
                     continue
                 shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
                 if shared:

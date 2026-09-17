@@ -47,7 +47,7 @@ BOUNDS = {
     "stoch_k_smooth": (2, 5),
     "stoch_rsi_oversold": (10.0, 30.0),
     "stoch_rsi_overbought": (70.0, 90.0),
-    "stop_loss_pct": (1.0, 8.0),
+    "stop_loss_pct": (1.0, 5.0),
     "take_profit_pct": (2.0, 22.0),
     "max_hold_hours": (12, 96),
     "position_size_pct": (2.0, 25.0),        # % of agent balance risked as notional
@@ -59,11 +59,24 @@ _ORDERED_PAIRS = [("ema_fast", "ema_slow"), ("min_atr_pct", "max_atr_pct")]
 
 # Minimum take_profit_pct:stop_loss_pct ratio - without this, SL/TP are drawn
 # fully independently and can land on genomes needing an improbable win rate
-# just to break even (e.g. SL=7%, TP=2.5%). 1.5x keeps the breakeven win rate
-# around ~40% and stays feasible across the whole BOUNDS grid: at the worst
-# case stop_loss_pct=8.0 (its max), the floor is take_profit_pct>=12.0, still
+# just to break even (e.g. SL=7%, TP=2.5%). 2.0x keeps the breakeven win rate
+# around ~33% (comfortable margin over the ~0.11% round-trip fee/slippage
+# cost) and stays feasible across the whole BOUNDS grid: at the worst case
+# stop_loss_pct=5.0 (its max), the floor is take_profit_pct>=10.0, still
 # comfortably under take_profit_pct's own 22.0 ceiling.
-_MIN_TP_SL_RATIO = 1.5
+_MIN_TP_SL_RATIO = 2.0
+
+# How far above the bare ratio floor _resample_tp_sl_ratio is willing to
+# redraw take_profit_pct to (as a multiple of the floor itself) - keeps
+# resampled values from clustering right back at the floor's edge.
+_TP_RESAMPLE_CEILING_MULT = 1.4
+
+# Heuristic cushion for _enforce_hold_window: how many hours a genome should
+# be given per 1% of its own take_profit_pct target, so a big target never
+# gets paired with a hold window too short to plausibly reach it. Not derived
+# from real SOL move-rate data - a deliberately loose, order-of-magnitude
+# guard rather than a precise timing model.
+_MIN_HOLD_HOURS_PER_TP_PCT = 4.0
 
 
 def _enforce_tp_sl_ratio(stop_loss_pct: float, take_profit_pct: float) -> tuple[float, float]:
@@ -78,12 +91,64 @@ def _enforce_tp_sl_ratio(stop_loss_pct: float, take_profit_pct: float) -> tuple[
     the true product for values like 4.85 * 1.5 = 7.275, which floats
     represent as 7.2749999999999995 and round() then rounds down to 7.27 -
     silently violating the invariant it's meant to enforce.
+
+    This is the DETERMINISTIC form - used by from_dict(), which must stay
+    idempotent for genomes reloaded from storage every cycle. Genome-creation
+    call sites (random/mutate/crossover) use _resample_tp_sl_ratio instead,
+    which has its own rng and avoids piling deficient draws up at exactly
+    this floor.
     """
     lo, hi = BOUNDS["stop_loss_pct"]
     stop_loss_pct = max(lo, min(hi, stop_loss_pct))
     min_tp = math.ceil(stop_loss_pct * _MIN_TP_SL_RATIO * 100) / 100
     take_profit_pct = max(take_profit_pct, min(min_tp, BOUNDS["take_profit_pct"][1]))
     return stop_loss_pct, take_profit_pct
+
+
+def _resample_tp_sl_ratio(rng: random.Random, stop_loss_pct: float, take_profit_pct: float) -> tuple[float, float]:
+    """Like _enforce_tp_sl_ratio, but for genome-creation call sites that
+    have their own rng. Clamping a deficient take_profit_pct to exactly the
+    floor makes many genomes pile up bare-minimum on risk:reward - a real
+    pattern a genome-quality review flagged (a thin edge once ~0.11%
+    round-trip fees/slippage are subtracted). Instead, redraw it from a band
+    comfortably above the floor. An already-compliant take_profit_pct is
+    left untouched, preserving whatever value evolution actually produced."""
+    lo, hi = BOUNDS["stop_loss_pct"]
+    stop_loss_pct = max(lo, min(hi, stop_loss_pct))
+    floor = stop_loss_pct * _MIN_TP_SL_RATIO
+    if take_profit_pct >= floor:
+        return stop_loss_pct, take_profit_pct
+    cap = BOUNDS["take_profit_pct"][1]
+    upper = min(floor * _TP_RESAMPLE_CEILING_MULT, cap)
+    take_profit_pct = min(floor, cap) if upper <= floor else round(rng.uniform(floor, upper), 2)
+    return stop_loss_pct, take_profit_pct
+
+
+def _enforce_hold_window(take_profit_pct: float, max_hold_hours: float) -> float:
+    """Returns max_hold_hours, bumped up if needed so it isn't too short for
+    the genome's own take_profit_pct to plausibly be reached - the "big
+    target, short hold window" incoherence a genome-quality review flagged.
+    Never lowers max_hold_hours, so a genome that already gives itself a
+    long window keeps it even for a tiny target."""
+    min_hold = take_profit_pct * _MIN_HOLD_HOURS_PER_TP_PCT
+    return max(max_hold_hours, min(min_hold, BOUNDS["max_hold_hours"][1]))
+
+
+def genome_distance(g1: "Genome", g2: "Genome") -> float:
+    """Mean absolute per-field distance between two genomes, each field
+    normalized to its own BOUNDS span so a wide-range field (e.g.
+    take_profit_pct's 2-22) can't dominate a narrow one (e.g. bb_std_dev's
+    1.5-3.0). 0.0 = identical on every tunable field, up to ~1.0 = opposite
+    extremes on every field. Used to steer new genomes away from near-clones
+    of already-alive agents - see Population._pick_best."""
+    d1, d2 = g1.to_dict(), g2.to_dict()
+    diffs = []
+    for field_name, (lo, hi) in BOUNDS.items():
+        span = hi - lo
+        if span <= 0:
+            continue
+        diffs.append(abs(d1[field_name] - d2[field_name]) / span)
+    return sum(diffs) / len(diffs) if diffs else 0.0
 
 
 @dataclass
@@ -141,6 +206,7 @@ class Genome:
         if d["max_atr_pct"] <= d["min_atr_pct"]:
             d["max_atr_pct"] = round(d["min_atr_pct"] + 0.1, 4)
         d["stop_loss_pct"], d["take_profit_pct"] = _enforce_tp_sl_ratio(d["stop_loss_pct"], d["take_profit_pct"])
+        d["max_hold_hours"] = _enforce_hold_window(d["take_profit_pct"], d["max_hold_hours"])
         return cls(**d)
 
     @classmethod
@@ -153,9 +219,10 @@ class Genome:
         ema_slow = max(int(u("ema_slow")), ema_fast + 5)
         min_atr_pct = round(u("min_atr_pct"), 4)
         max_atr_pct = max(round(u("max_atr_pct"), 4), min_atr_pct + 0.1)
-        stop_loss_pct, take_profit_pct = _enforce_tp_sl_ratio(
-            round(u("stop_loss_pct"), 2), round(u("take_profit_pct"), 2)
+        stop_loss_pct, take_profit_pct = _resample_tp_sl_ratio(
+            rng, round(u("stop_loss_pct"), 2), round(u("take_profit_pct"), 2)
         )
+        max_hold_hours = _enforce_hold_window(take_profit_pct, round(u("max_hold_hours"), 1))
 
         return cls(
             coin=coin,
@@ -190,7 +257,7 @@ class Genome:
             stoch_rsi_overbought=round(u("stoch_rsi_overbought"), 1),
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
-            max_hold_hours=round(u("max_hold_hours"), 1),
+            max_hold_hours=max_hold_hours,
             position_size_pct=round(u("position_size_pct"), 2),
         )
 
@@ -220,9 +287,10 @@ class Genome:
             child.ema_slow = child.ema_fast + 5
         if child.max_atr_pct <= child.min_atr_pct:
             child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
-        child.stop_loss_pct, child.take_profit_pct = _enforce_tp_sl_ratio(
-            child.stop_loss_pct, child.take_profit_pct
+        child.stop_loss_pct, child.take_profit_pct = _resample_tp_sl_ratio(
+            rng, child.stop_loss_pct, child.take_profit_pct
         )
+        child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
 
         return child
 
@@ -241,8 +309,9 @@ class Genome:
             child.ema_slow = child.ema_fast + 5
         if child.max_atr_pct <= child.min_atr_pct:
             child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
-        child.stop_loss_pct, child.take_profit_pct = _enforce_tp_sl_ratio(
-            child.stop_loss_pct, child.take_profit_pct
+        child.stop_loss_pct, child.take_profit_pct = _resample_tp_sl_ratio(
+            rng, child.stop_loss_pct, child.take_profit_pct
         )
+        child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
 
         return child
