@@ -868,6 +868,7 @@ footer {
         <thead><tr>
           <th>Agent</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th>
           <th>Result</th><th>Regime</th><th>Reason</th><th>Opened</th>
+          <th>Amount</th><th title="% of the agent's own balance risked as notional per trade (paper trading - no real borrowing)">Leverage</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -1604,8 +1605,10 @@ async function refresh() {
         <td class="regime-${t.regime || 'unknown'}">${t.regime || '-'}</td>
         <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
         <td>${ago(t.opened_at)}</td>
+        <td>$${fmt(t.notional)}</td>
+        <td>${t.agent_genome_json ? fmt(agentLeveragePct(t.agent_genome_json), 1) + '%' : '-'}</td>
       </tr>`;
-    }).join('') : '<tr><td colspan="9" class="empty">No trades yet</td></tr>';
+    }).join('') : '<tr><td colspan="11" class="empty">No trades yet</td></tr>';
 
     const loadMoreBtn = document.getElementById('trades-load-more');
     const endMsg = document.getElementById('trades-end');

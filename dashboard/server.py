@@ -159,8 +159,15 @@ def create_app(config: Config) -> Flask:
         # huge full-table scan.
         limit = min(max(int(request.args.get("limit", 15)), 1), 2000)
         conn = get_conn()
+        # Joined against agents (not a client-side lookup of already-fetched
+        # alive agents) because do-or-die means a LOSS trade's agent is
+        # already dead by the time this is viewed - an alive-only lookup
+        # would silently miss the genome on exactly those rows.
         rows = conn.execute(
-            "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+            """SELECT trades.*, agents.genome_json AS agent_genome_json
+               FROM trades JOIN agents ON trades.agent_id = agents.id
+               ORDER BY trades.id DESC LIMIT ?""",
+            (limit,),
         ).fetchall()
         total = conn.execute("SELECT COUNT(*) AS c FROM trades").fetchone()["c"]
         last_price_row = conn.execute("SELECT value FROM meta WHERE key = 'last_price'").fetchone()
