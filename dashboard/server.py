@@ -11,7 +11,6 @@ dashboard polled every few seconds.
 from __future__ import annotations
 
 import logging
-import math
 import sqlite3
 import time
 from pathlib import Path
@@ -19,6 +18,7 @@ from pathlib import Path
 from flask import Flask, g, jsonify, request, send_from_directory
 
 from config import Config
+from db.database import fitness_score
 from reasoning import ollama_advisor
 
 log = logging.getLogger(__name__)
@@ -122,16 +122,16 @@ def create_app(config: Config) -> Flask:
         # the displayed set is simply "the top N" and can't shift as
         # agents die/spawn between clicks.
         #
-        # Fetched unsorted and ranked here in Python (not a SQL ORDER BY)
-        # using the exact same formula as AgentRow.fitness in db/database.py
-        # (% return on starting balance + log1p(wins)*10, not raw PnL
-        # dollars, not win_rate - see that property's docstring for why).
-        # A duplicated SQL version of this formula lived here before and
-        # silently drifted out of sync with the Python one once already;
+        # Fetched unsorted and ranked here in Python (not a SQL ORDER BY),
+        # calling the same fitness_score() used by AgentRow.fitness in
+        # db/database.py (% return on starting balance + log1p(wins)*10, not
+        # raw PnL dollars, not win_rate - see that function's docstring for
+        # why). A duplicated SQL version of this formula lived here before
+        # and silently drifted out of sync with the Python one once already;
         # it also depended on SQLite's LN() math function, which isn't
         # available on every SQLite build (SQLITE_ENABLE_MATH_FUNCTIONS is
         # not universal) and would 500 the whole endpoint if missing.
-        # Computing it once in Python removes both risks structurally.
+        # Sharing one Python function removes both risks structurally.
         limit = min(max(int(request.args.get("limit", 25)), 1), 2000)
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
@@ -141,9 +141,7 @@ def create_app(config: Config) -> Flask:
         ).fetchall()
 
         def fitness(r: sqlite3.Row) -> float:
-            starting_balance = r["balance"] - r["total_pnl"]
-            pct_return = (r["total_pnl"] / starting_balance * 100.0) if starting_balance > 0 else 0.0
-            return pct_return + math.log1p(r["wins"]) * 10.0
+            return fitness_score(r["total_pnl"], r["balance"], r["wins"])
 
         ranked = sorted(rows, key=fitness, reverse=True)
         return jsonify({

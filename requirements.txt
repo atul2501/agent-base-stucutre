@@ -1,6 +1,14 @@
-hyperliquid-python-sdk>=0.10.0
-pandas>=2.0.0
-numpy>=1.24.0
-python-dotenv>=1.0.0
-ollama>=0.6.0
-flask>=3.0.0
+# Exact pins, not floor pins (>=). hyperliquid-python-sdk owns the real
+# order-signing/placement code that trading/live_executor.py depends on for
+# exact response-field shapes (fill price, account equity) - an unpinned
+# upgrade could silently change those shapes and corrupt the numbers the
+# circuit breaker and risk caps rely on, with nothing to catch it before a
+# live run. Bump versions deliberately, one at a time, and re-run
+# `python3 main.py --stress-test` plus a paper-trading session before
+# trusting a new pin on a live-armed deployment.
+hyperliquid-python-sdk==0.24.0
+pandas==3.0.5
+numpy==2.4.6
+python-dotenv==1.2.3
+ollama==0.6.2
+flask==3.1.3

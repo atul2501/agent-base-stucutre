@@ -127,8 +127,8 @@ def build_features(snap: MarketSnapshot, genome: Genome, prev_open_interest: flo
     bb_series = bollinger_percent_b(closes, genome.bb_period, genome.bb_std_dev)
     stoch_series = stochastic_rsi(closes, genome.stoch_rsi_period, genome.stoch_rsi_period, genome.stoch_k_smooth)
 
-    bid_vol = sum(l["sz"] for l in snap.bid_levels[:10])
-    ask_vol = sum(l["sz"] for l in snap.ask_levels[:10])
+    bid_vol = sum(lvl["sz"] for lvl in snap.bid_levels[:10])
+    ask_vol = sum(lvl["sz"] for lvl in snap.ask_levels[:10])
     ob_imbalance = bid_vol / ask_vol if ask_vol > 0 else 2.0
 
     best_bid = snap.bid_levels[0]["px"] if snap.bid_levels else snap.mid_price

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from strategy.genome import Genome
 from strategy.indicators import adx, atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap

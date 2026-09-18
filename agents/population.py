@@ -427,19 +427,19 @@ class Population:
 
         # Cull down to the population cap, protecting fresh (0-trade) agents -
         # unless they've sat idle so long (regime filters never admitting a
-        # trade) that they're just squatting a slot; those become culuable too.
+        # trade) that they're just squatting a slot; those become cullable too.
         overflow = len(alive) - self.config.population_cap
         if overflow > 0:
-            culuable = sorted(
+            cullable = sorted(
                 [a for a in alive if a.trades_count > 0
                  or _idle_hours(a) > self.config.max_idle_hours_before_cull],
                 key=lambda a: a.fitness,
             )
-            for agent in culuable[:overflow]:
+            for agent in cullable[:overflow]:
                 reason = "culled: population cap exceeded" if agent.trades_count > 0 else \
                     "culled: idle too long with no trades (population cap exceeded)"
                 self.db.kill_agent(agent.id, reason)
-            killed_ids = {a.id for a in culuable[:overflow]}
+            killed_ids = {a.id for a in cullable[:overflow]}
             alive = [a for a in alive if a.id not in killed_ids]
 
         ranked = sorted(alive, key=self._effective_rank_score, reverse=True)

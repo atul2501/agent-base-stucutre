@@ -66,8 +66,8 @@ class HyperliquidClient:
         candles = self.get_candles(coin, timeframe, candle_lookback_hours)
 
         book = self.info.l2_snapshot(coin)
-        bid_levels = [{"px": float(l["px"]), "sz": float(l["sz"])} for l in book["levels"][0]]
-        ask_levels = [{"px": float(l["px"]), "sz": float(l["sz"])} for l in book["levels"][1]]
+        bid_levels = [{"px": float(lvl["px"]), "sz": float(lvl["sz"])} for lvl in book["levels"][0]]
+        ask_levels = [{"px": float(lvl["px"]), "sz": float(lvl["sz"])} for lvl in book["levels"][1]]
 
         return MarketSnapshot(
             coin=coin,

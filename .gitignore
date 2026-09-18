@@ -8,3 +8,8 @@ __pycache__/
 .venv/
 venv/
 logs/
+.DS_Store
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/

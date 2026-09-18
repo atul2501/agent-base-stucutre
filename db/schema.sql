@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS live_position (
 CREATE TABLE IF NOT EXISTS live_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     coin TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('open', 'increase', 'decrease', 'close', 'flip')),
+    action TEXT NOT NULL CHECK (action IN ('open', 'increase', 'decrease', 'close', 'flip_close', 'flip_open')),
     side TEXT NOT NULL CHECK (side IN ('long', 'short')),
     notional REAL NOT NULL,
     fill_price REAL,

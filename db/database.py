@@ -16,6 +16,15 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def fitness_score(total_pnl: float, balance: float, wins: int) -> float:
+    """Shared fitness formula for AgentRow.fitness and the dashboard
+    leaderboard - factored out after the two drifted out of sync once
+    already when the dashboard carried its own inline copy."""
+    starting_balance = balance - total_pnl
+    pct_return = (total_pnl / starting_balance * 100.0) if starting_balance > 0 else 0.0
+    return pct_return + math.log1p(wins) * 10.0
+
+
 @dataclass
 class AgentRow:
     id: int
@@ -63,9 +72,7 @@ class AgentRow:
         # from a 20-win one. `wins` (== win_streak while alive) is used
         # instead, with log1p so the bonus grows with a proven track record
         # but with diminishing returns rather than unbounded linear growth.
-        starting_balance = self.balance - self.total_pnl
-        pct_return = (self.total_pnl / starting_balance * 100.0) if starting_balance > 0 else 0.0
-        return pct_return + math.log1p(self.wins) * 10.0
+        return fitness_score(self.total_pnl, self.balance, self.wins)
 
 
 class Database:
@@ -113,6 +120,38 @@ class Database:
         cycle_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(population_cycles)")}
         if "total_realized_pnl" not in cycle_cols:
             self.conn.execute("ALTER TABLE population_cycles ADD COLUMN total_realized_pnl REAL")
+            self.conn.commit()
+
+        # live_orders.action CHECK originally omitted 'flip_close'/'flip_open',
+        # which is exactly what a real position-side flip inserts - every
+        # flip raised an uncaught IntegrityError right after a real order was
+        # already placed on the exchange. SQLite can't ALTER a CHECK
+        # constraint, so rebuild the table on any DB still carrying the old
+        # constraint text; a fresh DB gets the fixed constraint straight from
+        # schema.sql and never hits this branch.
+        lo_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='live_orders'"
+        ).fetchone()
+        if lo_row and "flip_close" not in lo_row["sql"]:
+            self.conn.executescript(
+                """
+                ALTER TABLE live_orders RENAME TO live_orders_old;
+                CREATE TABLE live_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    coin TEXT NOT NULL,
+                    action TEXT NOT NULL CHECK (action IN ('open', 'increase', 'decrease', 'close', 'flip_close', 'flip_open')),
+                    side TEXT NOT NULL CHECK (side IN ('long', 'short')),
+                    notional REAL NOT NULL,
+                    fill_price REAL,
+                    status TEXT NOT NULL CHECK (status IN ('filled', 'error')),
+                    detail TEXT,
+                    placed_at TEXT NOT NULL
+                );
+                INSERT INTO live_orders (id, coin, action, side, notional, fill_price, status, detail, placed_at)
+                    SELECT id, coin, action, side, notional, fill_price, status, detail, placed_at FROM live_orders_old;
+                DROP TABLE live_orders_old;
+                """
+            )
             self.conn.commit()
 
     def close(self) -> None:
