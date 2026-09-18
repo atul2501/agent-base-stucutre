@@ -427,6 +427,8 @@ h1 span {
 section {
   margin-bottom: 18px;
   scroll-margin-top: 74px;
+  display: flex;
+  flex-direction: column;
 }
 
 section h2 {
@@ -469,6 +471,9 @@ section h2::before {
 
 /* ---- panels ---- */
 .panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -492,7 +497,9 @@ section h2::before {
 .chart-wrap {
   width: 100%;
   min-width: 0;
+  min-height: 0;
   height: 250px;
+  flex: 1 1 auto;
   position: relative;
   overflow: hidden;
 }
@@ -665,6 +672,7 @@ tbody tr:last-child td {
 .gauge-wrap {
   min-height: 245px;
   display: flex;
+  flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
   gap: 28px;
