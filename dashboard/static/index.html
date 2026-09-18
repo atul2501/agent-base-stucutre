@@ -741,7 +741,7 @@ footer {
   </section>
 
   <section>
-    <h2>Agents Evaluated Over Time</h2>
+    <h2 title="Alive agents, active traders (allowed to open new positions right now), and professional-tier lineages (2+ winning generations), per cycle">Population Over Time</h2>
     <div class="panel">
       <div class="viz-legend" id="pop-legend"></div>
       <div class="chart-wrap">
@@ -974,8 +974,13 @@ function renderLineChart(svg, legendEl, cycles, series, formatValue = dollarFmt)
   const labelIdxs = cycles.length > 1
     ? [...new Set([0, Math.floor((cycles.length - 1) / 2), cycles.length - 1])]
     : [0];
-  labelIdxs.forEach(i => {
-    out += `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-size="10" fill="#8b93a7">${cycles[i]}</text>`;
+  // Edge labels anchor inward (start/end instead of middle) so a longer,
+  // clearer label like "Cycle 128" can't get clipped by the chart's
+  // overflow:hidden frame at either edge - only matters for the first/last
+  // tick since those sit right at the plot's left/right boundary.
+  labelIdxs.forEach((i, pos) => {
+    const anchor = pos === 0 ? 'start' : (pos === labelIdxs.length - 1 ? 'end' : 'middle');
+    out += `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="${anchor}" font-size="10" fill="#8b93a7">${cycles[i]}</text>`;
   });
 
   series.forEach(s => {
@@ -1433,7 +1438,7 @@ async function refresh() {
   });
 
   section('pnl-chart', () => {
-    const cycles = pnlHistory.map(r => 'c' + r.cycle);
+    const cycles = pnlHistory.map(r => 'Cycle ' + r.cycle);
     const series = [
       { label: 'Swarm total realized PnL', color: PNL_SERIES_COLORS[0],
         values: pnlHistory.map(r => r.total_realized_pnl) },
@@ -1449,7 +1454,7 @@ async function refresh() {
     // allowed to open positions right now), and professional-tier count
     // (proven, self-sustaining lineages), all per cycle from the same
     // population_cycles history the PnL chart above already uses.
-    const cycles = pnlHistory.map(r => 'c' + r.cycle);
+    const cycles = pnlHistory.map(r => 'Cycle ' + r.cycle);
     const series = [
       { label: 'Alive agents', color: PNL_SERIES_COLORS[0], values: pnlHistory.map(r => r.alive_count) },
       { label: 'Active traders', color: PNL_SERIES_COLORS[1], values: pnlHistory.map(r => r.active_trader_count) },
@@ -1463,7 +1468,7 @@ async function refresh() {
     // view. Pairs with the live circuit breaker's own drawdown trip, but
     // this is realized-PnL-based (works in paper mode too), not real
     // account equity (that's live-only - see engine/orchestrator.py).
-    const cycles = pnlHistory.map(r => 'c' + r.cycle);
+    const cycles = pnlHistory.map(r => 'Cycle ' + r.cycle);
     let peak = -Infinity;
     const drawdown = pnlHistory.map(r => {
       const v = r.total_realized_pnl || 0;
