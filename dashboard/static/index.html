@@ -839,7 +839,7 @@ footer {
 
   <div id="agents">
   <section>
-    <h2>Leaderboard - top 50 by fitness (of up to <span id="lb-cap">500</span> alive)</h2>
+    <h2>Leaderboard - by fitness (showing <span id="lb-shown">25</span> of <span id="lb-cap">500</span> alive)</h2>
     <div class="panel table-scroll">
       <table id="leaderboard-table">
         <thead><tr>
@@ -851,6 +851,10 @@ footer {
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div style="text-align:center; margin-top:12px;">
+        <button id="leaderboard-load-more" class="badge" style="cursor:pointer; display:none; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font:inherit;">Load more</button>
+        <div id="leaderboard-end" class="empty" style="display:none; padding:8px;">No more agents</div>
+      </div>
     </div>
   </section>
 
@@ -912,6 +916,11 @@ const ago = (iso) => {
 // duplicate or shift as new trades come in between clicks.
 let tradesLimit = 15;
 const TRADES_PAGE_SIZE = 15;
+
+// Same pattern for the leaderboard: grown 25 at a time by its own
+// "Load more" button, re-sent as `limit` on every 5s auto-refresh.
+let leaderboardLimit = 25;
+const LEADERBOARD_PAGE_SIZE = 25;
 
 // Dependency-free inline SVG line chart - no external CDN (Chart.js used to
 // be loaded from cdnjs; on a server without outbound internet access to that
@@ -1282,7 +1291,7 @@ async function section(name, fn) {
 // fetched independently and falls back to its own last-good value, and a
 // staleness badge makes a stuck refresh visible instead of silent.
 const lastGood = {
-  overview: null, population: null, leaderboard: [], lineage: [],
+  overview: null, population: null, leaderboardResp: { leaderboard: [], total: 0 }, lineage: [],
   tradesResp: { trades: [], total: 0 }, pnlHistory: [], regimeStats: [], sentiment: null,
   winRateTrend: [], durationHistogram: [], lifespanHistogram: [], generationDepth: [],
 };
@@ -1320,7 +1329,7 @@ async function refresh() {
   const endpoints = {
     overview: '/api/overview',
     population: '/api/population',
-    leaderboard: '/api/leaderboard',
+    leaderboardResp: `/api/leaderboard?limit=${leaderboardLimit}`,
     lineage: '/api/lineage',
     tradesResp: `/api/trades?limit=${tradesLimit}`,
     pnlHistory: '/api/pnl_history',
@@ -1355,7 +1364,7 @@ async function refresh() {
 
   const overview = lastGood.overview;
   const population = lastGood.population;
-  const leaderboard = lastGood.leaderboard;
+  const leaderboardResp = lastGood.leaderboardResp;
   const lineage = lastGood.lineage;
   const tradesResp = lastGood.tradesResp;
   const pnlHistory = lastGood.pnlHistory;
@@ -1369,10 +1378,13 @@ async function refresh() {
 
   const trades = tradesResp.trades || [];
   const tradesTotal = tradesResp.total || 0;
+  const leaderboard = leaderboardResp.leaderboard || [];
+  const leaderboardTotal = leaderboardResp.total || 0;
 
   section('header', () => {
     document.getElementById('title').innerHTML = `AGENT SWARM <span>${overview.token} &middot; ${overview.timeframe} &middot; OPERATIONS CONSOLE</span>`;
-    document.getElementById('lb-cap').textContent = overview.population_cap;
+    document.getElementById('lb-cap').textContent = population.alive_count;
+    document.getElementById('lb-shown').textContent = leaderboard.length;
 
     const badges = [];
     badges.push(`<span class="badge ${overview.network}">${overview.network.toUpperCase()}</span>`);
@@ -1552,6 +1564,12 @@ async function refresh() {
         <td class="${a.total_pnl >= 0 ? 'pos' : 'neg'}">${a.total_pnl >= 0 ? '+' : ''}$${fmt(a.total_pnl)}</td>
         <td>${healthCell(a, overview.revalidation_drift_threshold)}</td>
       </tr>`).join('') : '<tr><td colspan="13" class="empty">No agents yet</td></tr>';
+
+    const lbLoadMoreBtn = document.getElementById('leaderboard-load-more');
+    const lbEndMsg = document.getElementById('leaderboard-end');
+    const lbMoreAvailable = leaderboard.length < leaderboardTotal;
+    lbLoadMoreBtn.style.display = lbMoreAvailable ? '' : 'none';
+    lbEndMsg.style.display = (!lbMoreAvailable && leaderboard.length > 0) ? '' : 'none';
   });
 
   section('lineage', () => {
@@ -1624,6 +1642,11 @@ async function refresh() {
 
 document.getElementById('trades-load-more').addEventListener('click', () => {
   tradesLimit += TRADES_PAGE_SIZE;
+  refresh();
+});
+
+document.getElementById('leaderboard-load-more').addEventListener('click', () => {
+  leaderboardLimit += LEADERBOARD_PAGE_SIZE;
   refresh();
 });
 

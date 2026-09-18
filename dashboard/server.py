@@ -116,8 +116,11 @@ def create_app(config: Config) -> Flask:
     @app.get("/api/leaderboard")
     def leaderboard():
         conn = get_conn()
-        # Top 50 by fitness out of up to population_cap (500) alive agents -
-        # matches ACTIVE_TRADER_COUNT, the set actually allowed to trade.
+        # Ranked by fitness across ALL alive agents (up to population_cap,
+        # 500), with `limit` growing via the dashboard's "Load More" button
+        # (25 at a time) - same non-offset pagination as /api/trades, so
+        # the displayed set is simply "the top N" and can't shift as
+        # agents die/spawn between clicks.
         #
         # Fetched unsorted and ranked here in Python (not a SQL ORDER BY)
         # using the exact same formula as AgentRow.fitness in db/database.py
@@ -129,6 +132,7 @@ def create_app(config: Config) -> Flask:
         # available on every SQLite build (SQLITE_ENABLE_MATH_FUNCTIONS is
         # not universal) and would 500 the whole endpoint if missing.
         # Computing it once in Python removes both risks structurally.
+        limit = min(max(int(request.args.get("limit", 25)), 1), 2000)
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
                       balance, wins, losses, win_streak, total_pnl, trades_count, genome_json,
@@ -141,8 +145,11 @@ def create_app(config: Config) -> Flask:
             pct_return = (r["total_pnl"] / starting_balance * 100.0) if starting_balance > 0 else 0.0
             return pct_return + math.log1p(r["wins"]) * 10.0
 
-        ranked = sorted(rows, key=fitness, reverse=True)[:50]
-        return jsonify([_row_to_dict(r) for r in ranked])
+        ranked = sorted(rows, key=fitness, reverse=True)
+        return jsonify({
+            "leaderboard": [_row_to_dict(r) for r in ranked[:limit]],
+            "total": len(rows),
+        })
 
     @app.get("/api/trades")
     def trades():
