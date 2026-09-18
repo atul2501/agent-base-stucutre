@@ -7,28 +7,39 @@
 <style>
 
 /* =========================================================
-   INDUSTRIAL / ENTERPRISE OPERATIONS CONSOLE
-   Dense information hierarchy; restrained motion; no "startup"
-   gradients, floating cards, glassmorphism or decorative blobs.
+   TRADING OPERATIONS CONSOLE
+   Dense information hierarchy, dark fintech-terminal styling:
+   soft elevation/shadows, subtle accent glows, pill badges,
+   restrained hover motion only (no flashy animation).
    ========================================================= */
 :root {
-  --bg: #080a0d;
-  --surface: #0d1014;
-  --surface-2: #11151a;
-  --surface-3: #151a20;
-  --surface-4: #1a2027;
-  --line: #252b33;
-  --line-strong: #343c46;
-  --text: #e5e9ed;
-  --text-strong: #f4f6f8;
-  --muted: #7f8995;
-  --muted-2: #5e6874;
-  --blue: #6d9cff;
-  --green: #42c994;
-  --red: #ef6977;
-  --amber: #d9ad55;
-  --purple: #a982e8;
-  --radius: 6px;
+  --bg: #060810;
+  --surface: #0b0e15;
+  --surface-2: #10141c;
+  --surface-3: #151a24;
+  --surface-4: #1b212c;
+  --line: #1d232d;
+  --line-strong: #2b3340;
+  --text: #e6e9ee;
+  --text-strong: #f8f9fb;
+  --muted: #8791a0;
+  --muted-2: #5f6876;
+  --blue: #6ea8ff;
+  --blue-dim: rgba(110,168,255,.13);
+  --green: #3fd096;
+  --green-dim: rgba(63,208,150,.13);
+  --red: #f16b7c;
+  --red-dim: rgba(241,107,124,.13);
+  --amber: #e2ac57;
+  --amber-dim: rgba(226,172,87,.13);
+  --purple: #b494ef;
+  --purple-dim: rgba(180,148,239,.13);
+  --radius: 10px;
+  --radius-sm: 7px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.35);
+  --shadow-md: 0 6px 20px -6px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.4);
+  --shadow-lg: 0 16px 40px -12px rgba(0,0,0,.6);
+  --ease: cubic-bezier(.4,0,.2,1);
 }
 
 * { box-sizing: border-box; }
@@ -38,59 +49,98 @@ html {
   scroll-behavior: smooth;
 }
 
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes shimmer {
+  from { background-position: -220px 0; }
+  to { background-position: 220px 0; }
+}
+
 body {
   margin: 0;
   padding: 0 0 42px;
   min-height: 100vh;
-  background:
-    linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px),
-    var(--bg);
-  background-size: 32px 32px;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(circle at 14% -8%, rgba(110,168,255,.07), transparent 55%),
+    radial-gradient(circle at 88% 2%, rgba(63,208,150,.05), transparent 50%),
+    linear-gradient(rgba(255,255,255,.013) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.013) 1px, transparent 1px);
+  background-repeat: no-repeat, no-repeat, repeat, repeat;
+  background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
   color: var(--text);
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
                "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.5;
   letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 .wrap {
   width: min(1600px, calc(100% - 40px));
   max-width: none;
   margin: 0 auto;
+  animation: fadeIn .45s var(--ease);
 }
+
+.num { font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 
 /* ---- application header ---- */
 header {
   position: sticky;
   top: 0;
   z-index: 50;
-  margin: 0 -20px 18px;
+  margin: 0 -20px 20px;
   padding: 0 20px;
-  height: 58px;
+  height: 60px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  background: rgba(8,10,13,.97);
+  background: rgba(6,8,16,.82);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
   border-bottom: 1px solid var(--line);
+  box-shadow: 0 12px 28px -18px rgba(0,0,0,.7);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.logo-mark {
+  flex: 0 0 auto;
+  filter: drop-shadow(0 0 10px rgba(110,168,255,.35));
 }
 
 h1 {
   margin: 0;
+  background: linear-gradient(95deg, var(--text-strong) 35%, var(--blue) 130%);
+  -webkit-background-clip: text;
+  background-clip: text;
   color: var(--text-strong);
   font-size: 16px;
   line-height: 1;
-  font-weight: 650;
-  letter-spacing: .01em;
+  font-weight: 700;
+  letter-spacing: .015em;
 }
 
 h1 span {
+  -webkit-background-clip: initial;
+  background-clip: initial;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
-  margin-left: 8px;
+  margin-left: 9px;
+  letter-spacing: .01em;
 }
 
 .badges {
@@ -102,36 +152,40 @@ h1 span {
 }
 
 .badge {
-  min-height: 24px;
-  padding: 3px 8px;
+  min-height: 25px;
+  padding: 4px 10px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
   background: var(--surface-2);
-  color: #aab2bb;
+  color: #aeb6c1;
   font-size: 10px;
   line-height: 1;
   font-weight: 650;
   letter-spacing: .04em;
   text-transform: uppercase;
+  box-shadow: var(--shadow-sm);
+  transition: border-color .15s var(--ease), background .15s var(--ease);
 }
 
 .badge.live {
   color: var(--red);
-  border-color: rgba(239,105,119,.42);
-  background: rgba(239,105,119,.06);
+  border-color: rgba(241,107,124,.4);
+  background: var(--red-dim);
 }
 
 .badge.paper {
   color: var(--green);
-  border-color: rgba(66,201,148,.35);
-  background: rgba(66,201,148,.05);
+  border-color: rgba(63,208,150,.35);
+  background: var(--green-dim);
 }
 
-.badge.mainnet { color: var(--amber); }
-.badge.testnet { color: var(--blue); }
+.badge.mainnet { color: var(--amber); border-color: rgba(226,172,87,.35); background: var(--amber-dim); }
+.badge.testnet { color: var(--blue); border-color: rgba(110,168,255,.35); background: var(--blue-dim); }
+
+.badge.stale-badge { color: var(--amber); border-color: rgba(226,172,87,.4); background: var(--amber-dim); }
 
 .dot {
   width: 6px;
@@ -140,15 +194,15 @@ h1 span {
   display: inline-block;
   flex: 0 0 auto;
 }
-.dot.green { background: var(--green); }
-.dot.red { background: var(--red); }
-.dot.amber { background: var(--amber); }
+.dot.green { background: var(--green); box-shadow: 0 0 6px rgba(63,208,150,.7); }
+.dot.red { background: var(--red); box-shadow: 0 0 6px rgba(241,107,124,.7); }
+.dot.amber { background: var(--amber); box-shadow: 0 0 6px rgba(226,172,87,.7); }
 .dot.grey { background: var(--muted-2); }
 
 /* ---- utility toolbar ---- */
 .dashboard-toolbar {
-  min-height: 38px;
-  margin: 0 0 14px;
+  min-height: 40px;
+  margin: 0 0 16px;
   padding: 0 10px;
   display: flex;
   align-items: center;
@@ -157,31 +211,52 @@ h1 span {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
 }
 
 .quick-nav {
   display: flex;
   align-items: stretch;
-  gap: 0;
+  gap: 2px;
 }
 
 .quick-nav a {
+  position: relative;
   display: inline-flex;
   align-items: center;
   min-height: 36px;
-  padding: 0 11px;
+  padding: 0 12px;
   color: var(--muted);
-  border-right: 1px solid transparent;
   text-decoration: none;
   font-size: 10px;
   font-weight: 650;
   letter-spacing: .06em;
   text-transform: uppercase;
+  border-radius: var(--radius-sm);
+  transition: color .15s var(--ease), background .15s var(--ease);
+}
+
+.quick-nav a::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 5px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--blue);
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform .18s var(--ease);
 }
 
 .quick-nav a:hover {
   color: var(--text-strong);
   background: var(--surface-3);
+}
+
+.quick-nav a:hover::after {
+  transform: scaleX(1);
 }
 
 .refresh-meta {
@@ -198,47 +273,67 @@ h1 span {
   height: 6px;
   border-radius: 50%;
   background: var(--green);
+  box-shadow: 0 0 6px rgba(63,208,150,.7);
+  transition: background .2s var(--ease), box-shadow .2s var(--ease);
 }
 
 .refresh-indicator.error {
   background: var(--amber);
+  box-shadow: 0 0 6px rgba(226,172,87,.7);
 }
 
 #manual-refresh,
-#trades-load-more {
+#trades-load-more,
+#leaderboard-load-more {
   appearance: none;
   border: 1px solid var(--line-strong);
   background: var(--surface-3);
-  color: #c5ccd4;
-  border-radius: 4px;
-  padding: 5px 9px;
+  color: #c8cfd8;
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
   font: inherit;
   font-size: 10px;
   font-weight: 650;
+  letter-spacing: .02em;
   cursor: pointer;
+  transition: background .15s var(--ease), border-color .15s var(--ease),
+              transform .15s var(--ease), box-shadow .15s var(--ease);
 }
 
 #manual-refresh:hover,
-#trades-load-more:hover {
+#trades-load-more:hover,
+#leaderboard-load-more:hover {
   background: var(--surface-4);
+  border-color: var(--blue);
   color: var(--text-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+#manual-refresh:focus-visible,
+#trades-load-more:focus-visible,
+#leaderboard-load-more:focus-visible,
+.quick-nav a:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--blue);
 }
 
 #manual-refresh:disabled {
   opacity: .55;
   cursor: wait;
+  transform: none;
 }
 
 /* ---- system alert ---- */
 #breaker-banner {
-  margin-bottom: 14px !important;
-  padding: 10px 12px !important;
-  border-radius: 4px !important;
-  background: rgba(239,105,119,.07) !important;
-  border: 1px solid rgba(239,105,119,.55) !important;
-  color: #f18a95 !important;
+  margin-bottom: 16px !important;
+  padding: 12px 14px !important;
+  border-radius: var(--radius-sm) !important;
+  background: var(--red-dim) !important;
+  border: 1px solid rgba(241,107,124,.5) !important;
+  color: #ffaab4 !important;
   font-size: 11px !important;
-  box-shadow: none !important;
+  box-shadow: var(--shadow-md) !important;
 }
 
 /* ---- KPI strip ---- */
@@ -247,37 +342,47 @@ h1 span {
 .grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1px;
-  margin-bottom: 20px;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: hidden;
+  gap: 10px;
+  margin-bottom: 22px;
 }
 
 .card {
   position: relative;
-  min-height: 94px;
-  padding: 13px 14px;
+  min-height: 96px;
+  padding: 14px 15px 14px 17px;
   background: var(--surface);
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: transform .16s var(--ease), box-shadow .16s var(--ease),
+              border-color .16s var(--ease);
 }
 
 .card::before {
-  content: none;
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--blue);
+  opacity: .75;
 }
 
+.card.card--pos::before { background: var(--green); }
+.card.card--neg::before { background: var(--red); }
+
 .card:hover {
-  transform: none;
+  transform: translateY(-2px);
   background: var(--surface-2);
-  border: 0;
-  box-shadow: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
 }
 
 .card .label {
-  margin-bottom: 8px;
+  margin-bottom: 9px;
   color: var(--muted);
   font-size: 9px;
   font-weight: 650;
@@ -288,10 +393,11 @@ h1 span {
 
 .card .value {
   color: var(--text-strong);
-  font-size: 23px;
+  font-size: 24px;
   line-height: 1.05;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
 }
 
 .card .sub {
@@ -304,22 +410,35 @@ h1 span {
 .pos { color: var(--green) !important; }
 .neg { color: var(--red) !important; }
 
+/* ---- KPI loading skeleton (shown before the first successful refresh) ---- */
+.card.skeleton { pointer-events: none; }
+.card.skeleton::before { display: none; }
+.skeleton-bar {
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-3) 25%, var(--surface-4) 50%, var(--surface-3) 75%);
+  background-size: 440px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+.card.skeleton .skeleton-bar.label { width: 60%; height: 9px; margin-bottom: 12px; }
+.card.skeleton .skeleton-bar.value { width: 45%; height: 20px; margin-bottom: 10px; }
+.card.skeleton .skeleton-bar.sub { width: 75%; height: 9px; }
+
 /* ---- sections ---- */
 section {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
   scroll-margin-top: 74px;
 }
 
 section h2 {
-  min-height: 24px;
+  min-height: 26px;
   margin: 0;
-  padding: 0 2px 7px;
+  padding: 0 2px 8px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: #9da6b0;
+  gap: 9px;
+  color: #a4adb8;
   border-bottom: 1px solid var(--line);
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1;
   font-weight: 700;
   letter-spacing: .10em;
@@ -328,19 +447,46 @@ section h2 {
 
 section h2::before {
   content: "";
-  width: 2px;
-  height: 11px;
-  border-radius: 0;
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
   background: var(--blue);
+  box-shadow: 0 0 8px rgba(110,168,255,.55);
+}
+
+.h2-tag {
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted-2);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: none;
 }
 
 /* ---- panels ---- */
 .panel {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 0 0 var(--radius) var(--radius);
-  padding: 12px;
-  box-shadow: none;
+  border-radius: var(--radius);
+  padding: 13px;
+  box-shadow: var(--shadow-sm);
+  position: relative;
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 1px;
+  height: 1px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent);
+  pointer-events: none;
 }
 
 .chart-wrap {
@@ -365,7 +511,7 @@ section h2::before {
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
   color: var(--muted);
   font-size: 10px;
 }
@@ -373,26 +519,37 @@ section h2::before {
 .viz-legend .swatch {
   width: 8px !important;
   height: 8px !important;
-  border-radius: 1px !important;
+  border-radius: 2px !important;
 }
 
 .viz-tooltip {
-  background: #171c22;
+  background: #181e28;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  padding: 7px 9px;
-  color: #cbd2da;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: #cfd6de;
   font-size: 10px;
-  line-height: 1.45;
-  box-shadow: 0 8px 22px rgba(0,0,0,.45);
+  line-height: 1.5;
+  box-shadow: var(--shadow-lg);
 }
 
 /* ---- tables ---- */
 .table-scroll {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 480px;
   scrollbar-width: thin;
-  scrollbar-color: #303741 transparent;
+  scrollbar-color: #333c48 transparent;
+  border-radius: var(--radius-sm);
 }
+
+.table-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.table-scroll::-webkit-scrollbar-track { background: transparent; }
+.table-scroll::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+}
+.table-scroll::-webkit-scrollbar-thumb:hover { background: #3a4351; }
 
 table {
   width: 100%;
@@ -402,30 +559,36 @@ table {
 
 th, td {
   text-align: left;
-  padding: 8px 9px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   color: var(--muted-2);
-  background: #0b0e12;
+  background: #0d1118;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: .08em;
   text-transform: uppercase;
+  box-shadow: inset 0 -1px 0 var(--line-strong);
 }
 
 td {
-  color: #b9c0c8;
+  color: #bcc3cc;
 }
 
 tbody tr {
-  transition: background .08s linear;
+  transition: background .12s var(--ease), box-shadow .12s var(--ease);
 }
 
 tbody tr:hover {
-  background: #151a20;
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--blue);
 }
 
 tbody tr:last-child td {
@@ -433,49 +596,69 @@ tbody tr:last-child td {
 }
 
 .flag {
-  padding: 2px 5px;
-  border-radius: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
   border: 1px solid var(--line);
   font-size: 9px;
-  line-height: 1.2;
+  font-weight: 650;
+  line-height: 1.4;
 }
 
 .flag.on {
   color: var(--blue);
-  border-color: rgba(109,156,255,.32);
-  background: rgba(109,156,255,.04);
+  border-color: rgba(110,168,255,.35);
+  background: var(--blue-dim);
 }
 
-.tier-pro { color: var(--purple); font-weight: 650; }
-.tier-std { color: var(--muted); }
-.side-long { color: var(--green); }
-.side-short { color: var(--red); }
-.result-win { color: var(--green); }
-.result-loss { color: var(--red); }
-.result-open { color: var(--muted); }
-.regime-trending-up { color: var(--green); }
-.regime-trending-down { color: var(--red); }
-.regime-ranging { color: var(--amber); }
-.regime-unknown { color: var(--muted); }
-.health-ok { color: var(--green); }
-.health-drifted { color: var(--amber); font-weight: 650; }
-.health-pending { color: var(--muted-2); }
+/* Pill badge base - applied alongside a color modifier class below, always
+   on an inline <span> (never directly on a <td>) so it can't change a
+   table cell's box model / row height. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.tier-pro { color: var(--purple); background: var(--purple-dim); }
+.tier-std { color: var(--muted); background: var(--surface-3); }
+.side-long { color: var(--green); background: var(--green-dim); }
+.side-short { color: var(--red); background: var(--red-dim); }
+.result-win { color: var(--green); background: var(--green-dim); }
+.result-loss { color: var(--red); background: var(--red-dim); }
+.result-open { color: var(--muted); background: var(--surface-3); }
+.regime-trending-up { color: var(--green); background: var(--green-dim); }
+.regime-trending-down { color: var(--red); background: var(--red-dim); }
+.regime-ranging { color: var(--amber); background: var(--amber-dim); }
+.regime-unknown { color: var(--muted); background: var(--surface-3); }
+.health-ok { color: var(--green); background: var(--green-dim); }
+.health-drifted { color: var(--amber); background: var(--amber-dim); }
+.health-pending { color: var(--muted-2); background: var(--surface-3); }
 
 .empty {
   color: var(--muted-2);
   font-size: 11px;
-  padding: 22px;
+  padding: 26px;
   text-align: center;
 }
 
 /* ---- chart SVG styling without changing chart logic ---- */
 .chart-wrap svg line[stroke="#232838"] {
-  stroke: #20262d !important;
+  stroke: rgba(255,255,255,.055) !important;
 }
 
 .chart-wrap svg text {
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
                "Segoe UI", sans-serif;
+  fill: #8b93a7;
+}
+
+.chart-wrap svg path {
+  transition: opacity .15s var(--ease);
 }
 
 /* ---- gauge ---- */
@@ -495,9 +678,10 @@ tbody tr:last-child td {
 .gauge-value {
   margin-top: -8px;
   color: var(--text-strong);
-  font-size: 38px;
-  font-weight: 650;
+  font-size: 40px;
+  font-weight: 700;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .gauge-label {
@@ -514,36 +698,50 @@ tbody tr:last-child td {
   min-width: 240px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
+  gap: 8px;
 }
 
 .gauge-components > div {
-  padding: 11px 12px;
+  padding: 12px 13px;
   background: var(--surface-2);
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: border-color .15s var(--ease), background .15s var(--ease);
+}
+
+.gauge-components > div:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-3);
 }
 
 .gauge-components .comp-label {
   color: var(--muted-2);
   font-size: 9px;
   letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .gauge-components .comp-value {
-  margin-top: 3px;
-  color: #cbd1d8;
+  margin-top: 4px;
+  color: #d0d6de;
   font-size: 13px;
   font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.gauge-note {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  color: var(--muted-2);
+  font-size: 9.5px;
+  line-height: 1.5;
 }
 
 /* ---- lineage ---- */
 .lineage-legend {
   display: flex;
   gap: 16px;
-  margin-bottom: 11px;
+  margin-bottom: 12px;
   color: var(--muted);
   font-size: 10px;
   flex-wrap: wrap;
@@ -553,16 +751,21 @@ tbody tr:last-child td {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 8px;
-  border-radius: 3px;
+  padding: 4px 9px;
+  border-radius: 999px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s var(--ease), border-color .14s var(--ease),
+              background .14s var(--ease);
 }
 
 .lineage-node:hover {
   background: var(--surface-3);
   border-color: var(--line-strong);
+  transform: translateY(-1px);
 }
 
 .status-dot {
@@ -628,18 +831,18 @@ tbody tr:last-child td {
 
 /* ---- live execution area ---- */
 #live-section .panel {
-  border-color: rgba(66,201,148,.24);
-  box-shadow: inset 2px 0 0 rgba(66,201,148,.45);
+  border-color: rgba(63,208,150,.28);
+  box-shadow: var(--shadow-sm), inset 3px 0 0 var(--green);
 }
 
 #live-position .badge {
-  border-radius: 3px;
+  border-radius: 999px;
 }
 
 /* ---- footer ---- */
 footer {
-  margin-top: 22px;
-  padding: 12px 0 0;
+  margin-top: 24px;
+  padding: 14px 0 0;
   color: var(--muted-2);
   border-top: 1px solid var(--line);
   font-size: 9px;
@@ -702,7 +905,15 @@ footer {
 <body>
 <div class="wrap">
   <header>
-    <h1 id="title">Agent Swarm <span>loading...</span></h1>
+    <div class="brand">
+      <svg class="logo-mark" width="22" height="22" viewBox="0 0 24 24" role="img" aria-label="Agent Swarm logo">
+        <circle cx="12" cy="5" r="2.6" fill="#6ea8ff"/>
+        <circle cx="5" cy="18" r="2.6" fill="#3fd096"/>
+        <circle cx="19" cy="18" r="2.6" fill="#b494ef"/>
+        <path d="M12 7.6 L5 15.4 M12 7.6 L19 15.4 M6.8 18 H17.2" stroke="#4a5568" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+      </svg>
+      <h1 id="title">Agent Swarm <span>loading...</span></h1>
+    </div>
     <div class="badges" id="badges"></div>
   </header>
 
@@ -726,11 +937,20 @@ footer {
 
   <div id="overview"></div>
   <div class="grid" id="stat-cards">
+    <!-- Replaced wholesale by the "stat-cards" section of refresh() on first
+         successful load - these skeletons only cover the brief pre-refresh
+         moment so the KPI strip isn't a blank void. -->
+    <div class="card skeleton"><div class="skeleton-bar label"></div><div class="skeleton-bar value"></div><div class="skeleton-bar sub"></div></div>
+    <div class="card skeleton"><div class="skeleton-bar label"></div><div class="skeleton-bar value"></div><div class="skeleton-bar sub"></div></div>
+    <div class="card skeleton"><div class="skeleton-bar label"></div><div class="skeleton-bar value"></div><div class="skeleton-bar sub"></div></div>
+    <div class="card skeleton"><div class="skeleton-bar label"></div><div class="skeleton-bar value"></div><div class="skeleton-bar sub"></div></div>
+    <div class="card skeleton"><div class="skeleton-bar label"></div><div class="skeleton-bar value"></div><div class="skeleton-bar sub"></div></div>
+    <div class="card skeleton"><div class="skeleton-bar label"></div><div class="skeleton-bar value"></div><div class="skeleton-bar sub"></div></div>
   </div>
 
   <div id="analytics">
   <section>
-    <h2>PnL by Cycle <span style="margin-left:auto;color:var(--muted-2);font-size:9px;font-weight:500;letter-spacing:.04em;text-transform:none;">REALIZED PERFORMANCE</span></h2>
+    <h2>PnL by Cycle <span class="h2-tag">REALIZED PERFORMANCE</span></h2>
     <div class="panel">
       <div class="viz-legend" id="pnl-legend"></div>
       <div class="chart-wrap">
@@ -852,7 +1072,7 @@ footer {
         <tbody></tbody>
       </table>
       <div style="text-align:center; margin-top:12px;">
-        <button id="leaderboard-load-more" class="badge" style="cursor:pointer; display:none; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font:inherit;">Load more</button>
+        <button id="leaderboard-load-more" type="button" style="display:none;">Load more</button>
         <div id="leaderboard-end" class="empty" style="display:none; padding:8px;">No more agents</div>
       </div>
     </div>
@@ -862,7 +1082,7 @@ footer {
 
   <div id="trades">
   <section>
-    <h2>Recent Trades <span style="margin-left:auto;color:var(--muted-2);font-size:9px;font-weight:500;letter-spacing:.04em;text-transform:none;">EXECUTION LOG</span></h2>
+    <h2>Recent Trades <span class="h2-tag">EXECUTION LOG</span></h2>
     <div class="panel table-scroll">
       <table id="trades-table">
         <thead><tr>
@@ -873,7 +1093,7 @@ footer {
         <tbody></tbody>
       </table>
       <div style="text-align:center; margin-top:12px;">
-        <button id="trades-load-more" class="badge" style="cursor:pointer; display:none; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font:inherit;">Load more</button>
+        <button id="trades-load-more" type="button" style="display:none;">Load more</button>
         <div id="trades-end" class="empty" style="display:none; padding:8px;">No more trades</div>
       </div>
     </div>
@@ -1173,13 +1393,13 @@ function agentLeveragePct(genomeJson) {
 // false pass.
 function healthCell(a, driftThreshold) {
   if (a.revalidated_at === null || a.revalidated_at === undefined) {
-    return `<span class="health-pending" title="Not re-checked yet">pending</span>`;
+    return `<span class="pill health-pending" title="Not re-checked yet">pending</span>`;
   }
   const score = a.revalidation_score;
   const drifted = score !== null && score !== undefined && score < driftThreshold;
   const label = drifted ? 'DRIFTED' : 'ok';
   const cls = drifted ? 'health-drifted' : 'health-ok';
-  return `<span class="${cls}" title="Re-backtest score vs newest data: ${fmt(score)} (checked ${ago(a.revalidated_at)})">${label}</span>`;
+  return `<span class="pill ${cls}" title="Re-backtest score vs newest data: ${fmt(score)} (checked ${ago(a.revalidated_at)})">${label}</span>`;
 }
 
 // Full plain-English explanation shown on hover (title attr) - every
@@ -1429,12 +1649,15 @@ async function refresh() {
       ["Max Generation", population.max_generation || 0, "deepest lineage reached"],
       ["Avg Balance (alive)", '$' + fmt(population.avg_balance), "paper balance"],
     ];
-    document.getElementById('stat-cards').innerHTML = cards.map(([label, value, sub]) => `
-      <div class="card">
+    document.getElementById('stat-cards').innerHTML = cards.map(([label, value, sub]) => {
+      const trendCls = typeof value === 'string' && value.startsWith('+') ? 'pos' : (typeof value === 'string' && value.startsWith('-') ? 'neg' : '');
+      return `
+      <div class="card ${trendCls === 'pos' ? 'card--pos' : (trendCls === 'neg' ? 'card--neg' : '')}">
         <div class="label">${label}</div>
-        <div class="value ${typeof value === 'string' && value.startsWith('+') ? 'pos' : (typeof value === 'string' && value.startsWith('-') ? 'neg' : '')}">${value}</div>
+        <div class="value ${trendCls}">${value}</div>
         <div class="sub">${sub}</div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   });
 
   section('pnl-chart', () => {
@@ -1548,7 +1771,7 @@ async function refresh() {
     const rtBody = document.querySelector('#regime-table tbody');
     rtBody.innerHTML = rows.length ? rows.map(r => `
       <tr>
-        <td class="regime-${r.regime}">${labels[r.regime] || r.regime}</td>
+        <td><span class="pill regime-${r.regime}">${labels[r.regime] || r.regime}</span></td>
         <td>${r.trades}</td>
         <td>${pct(r.win_rate)}</td>
         <td class="${r.total_pnl >= 0 ? 'pos' : 'neg'}">${r.total_pnl >= 0 ? '+' : ''}$${fmt(r.total_pnl)}</td>
@@ -1560,7 +1783,7 @@ async function refresh() {
     lbBody.innerHTML = leaderboard.length ? leaderboard.map(a => `
       <tr>
         <td>#${a.id}</td>
-        <td class="${a.tier === 'professional' ? 'tier-pro' : 'tier-std'}">${a.tier}</td>
+        <td><span class="pill ${a.tier === 'professional' ? 'tier-pro' : 'tier-std'}">${a.tier}</span></td>
         <td>${a.generation}</td>
         <td>${a.is_active_trader ? '<span class="flag on">TRADER</span>' : ''} ${a.is_live_trader ? '<span class="flag on">LIVE</span>' : ''}</td>
         <td title="${strategyExplain(a.genome_json)}" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;">${strategySummary(a.genome_json)}</td>
@@ -1589,25 +1812,25 @@ async function refresh() {
       if (t.pnl !== null) {
         // Closed - the real, final result: WIN (green) or LOSS (red).
         pnlCell = `<span class="${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl >= 0 ? '+' : ''}$${fmt(t.pnl)}</span>`;
-        statusCell = `<span class="result-${t.result}">${t.result.toUpperCase()}</span>`;
+        statusCell = `<span class="pill result-${t.result}">${t.result.toUpperCase()}</span>`;
       } else if (t.unrealized_pnl !== null && t.unrealized_pnl !== undefined) {
         // Still open - live/unrealized: how much it's currently made or lost, right now.
         const up = t.unrealized_pnl >= 0;
         pnlCell = `<span class="${up ? 'pos' : 'neg'}" title="unrealized - position still open">~${up ? '+' : ''}$${fmt(t.unrealized_pnl)}</span>`;
-        statusCell = `<span class="result-open ${up ? 'pos' : 'neg'}">OPEN &middot; ${up ? 'UP' : 'DOWN'} ${up ? '▲' : '▼'}</span>`;
+        statusCell = `<span class="pill result-open ${up ? 'pos' : 'neg'}">OPEN &middot; ${up ? 'UP' : 'DOWN'} ${up ? '▲' : '▼'}</span>`;
       } else {
         pnlCell = '-';
-        statusCell = `<span class="result-open">${t.result}</span>`;
+        statusCell = `<span class="pill result-open">${t.result}</span>`;
       }
       return `
       <tr>
         <td>#${t.agent_id}</td>
-        <td class="side-${t.side}">${t.side.toUpperCase()}</td>
+        <td><span class="pill side-${t.side}">${t.side.toUpperCase()}</span></td>
         <td>${fmt(t.entry_price, 4)}</td>
         <td>${t.exit_price ? fmt(t.exit_price, 4) : '-'}</td>
         <td>${pnlCell}</td>
         <td>${statusCell}</td>
-        <td class="regime-${t.regime || 'unknown'}">${t.regime || '-'}</td>
+        <td><span class="pill regime-${t.regime || 'unknown'}">${t.regime || '-'}</span></td>
         <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
         <td>${ago(t.opened_at)}</td>
         <td>$${fmt(t.notional)}</td>
@@ -1637,7 +1860,7 @@ async function refresh() {
       loBody.innerHTML = live.recent_orders.length ? live.recent_orders.map(o => `
         <tr>
           <td>${ago(o.placed_at)}</td><td>${o.action}</td>
-          <td class="side-${o.side}">${o.side}</td>
+          <td><span class="pill side-${o.side}">${o.side}</span></td>
           <td>${o.fill_price ? fmt(o.fill_price,4) : '-'}</td>
           <td class="${o.status==='filled'?'pos':'neg'}">${o.status}</td>
           <td title="${o.detail||''}">${(o.detail||'').slice(0,50)}</td>
