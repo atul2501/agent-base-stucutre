@@ -513,21 +513,67 @@ section h2::before {
 }
 
 .viz-legend {
-  min-height: 20px;
+  min-height: 22px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 18px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 10px;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .viz-legend .swatch {
-  width: 8px !important;
-  height: 8px !important;
-  border-radius: 2px !important;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 3px !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.06);
 }
+
+.range-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: -6px 0 14px;
+}
+
+.range-toolbar-label {
+  font-size: 10px;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.range-selector {
+  display: inline-flex;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.range-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  padding: 5px 13px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .15s var(--ease), color .15s var(--ease);
+}
+
+.range-btn:hover { color: var(--text); }
+
+.range-btn.active { background: var(--blue-dim); color: var(--blue); }
+
+.range-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 
 .viz-tooltip {
   background: #181e28;
@@ -957,6 +1003,15 @@ footer {
   </div>
 
   <div id="analytics">
+  <div class="range-toolbar">
+    <span class="range-toolbar-label">Time range</span>
+    <div class="range-selector" role="group" aria-label="Chart time range">
+      <button type="button" class="range-btn" data-range="1D">1D</button>
+      <button type="button" class="range-btn" data-range="1W">1W</button>
+      <button type="button" class="range-btn" data-range="1M">1M</button>
+      <button type="button" class="range-btn active" data-range="ALL">ALL</button>
+    </div>
+  </div>
   <section>
     <h2>PnL by Cycle <span class="h2-tag">REALIZED PERFORMANCE</span></h2>
     <div class="panel">
@@ -1151,6 +1206,17 @@ const TRADES_PAGE_SIZE = 15;
 let leaderboardLimit = 25;
 const LEADERBOARD_PAGE_SIZE = 25;
 
+// Shared time-range filter for the 4 timestamped line charts (PnL,
+// Population, Drawdown, Win Rate). Purely client-side against already
+// fetched data - see renderTimeSeriesCharts().
+let activeRange = 'ALL'; // '1D' | '1W' | '1M' | 'ALL'
+const RANGE_MS = { '1D': 24 * 3600 * 1000, '1W': 7 * 24 * 3600 * 1000, '1M': 30 * 24 * 3600 * 1000 };
+function filterByRange(rows, dateField) {
+  if (activeRange === 'ALL' || !rows.length) return rows;
+  const cutoff = Date.now() - RANGE_MS[activeRange];
+  return rows.filter(r => new Date(r[dateField]).getTime() >= cutoff);
+}
+
 // Dependency-free inline SVG line chart - no external CDN (Chart.js used to
 // be loaded from cdnjs; on a server without outbound internet access to that
 // CDN the canvas just stayed permanently blank with no visible error). One
@@ -1173,7 +1239,7 @@ function renderLineChart(svg, legendEl, cycles, series, formatValue = dollarFmt)
 
   if (!cycles.length) {
     svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    svg.innerHTML = `<text x="${w/2}" y="${h/2}" text-anchor="middle" fill="#8b93a7" font-size="13">No cycles yet</text>`;
+    svg.innerHTML = `<text x="${w/2}" y="${h/2}" text-anchor="middle" fill="#8b93a7" font-size="13">No data in this range</text>`;
     svg.__chartState = null;
     return;
   }
@@ -1258,6 +1324,63 @@ attachChartHover(document.getElementById('pnlChart'), document.getElementById('p
 attachChartHover(document.getElementById('popChart'), document.getElementById('pop-tooltip'));
 attachChartHover(document.getElementById('drawdownChart'), document.getElementById('drawdown-tooltip'));
 attachChartHover(document.getElementById('winrateChart'), document.getElementById('winrate-tooltip'));
+
+// Renders the 4 timestamped line charts from the last-fetched data, filtered
+// by activeRange. Reads lastGood directly (not refresh()'s local consts) so
+// a range-button click can re-render instantly with no network round-trip.
+function renderTimeSeriesCharts() {
+  const pnlRows = filterByRange(lastGood.pnlHistory || [], 'ran_at');
+  const wrtRows = filterByRange(lastGood.winRateTrend || [], 'day');
+
+  section('pnl-chart', () => {
+    const cycles = pnlRows.map(r => 'Cycle ' + r.cycle);
+    const series = [
+      { label: 'Swarm total realized PnL', color: PNL_SERIES_COLORS[0],
+        values: pnlRows.map(r => r.total_realized_pnl) },
+      { label: "Current best agent's total PnL", color: PNL_SERIES_COLORS[1],
+        values: pnlRows.map(r => r.best_total_pnl) },
+    ];
+    renderLineChart(document.getElementById('pnlChart'), document.getElementById('pnl-legend'), cycles, series);
+  });
+
+  section('population-chart', () => {
+    const cycles = pnlRows.map(r => 'Cycle ' + r.cycle);
+    const series = [
+      { label: 'Alive agents', color: PNL_SERIES_COLORS[0], values: pnlRows.map(r => r.alive_count) },
+      { label: 'Active traders', color: PNL_SERIES_COLORS[1], values: pnlRows.map(r => r.active_trader_count) },
+      { label: 'Professional tier', color: PNL_SERIES_COLORS[2], values: pnlRows.map(r => r.professional_count) },
+    ];
+    renderLineChart(document.getElementById('popChart'), document.getElementById('pop-legend'), cycles, series, countFmt);
+  });
+
+  section('drawdown-chart', () => {
+    const cycles = pnlRows.map(r => 'Cycle ' + r.cycle);
+    let peak = -Infinity;
+    const drawdown = pnlRows.map(r => {
+      const v = r.total_realized_pnl || 0;
+      peak = Math.max(peak, v);
+      return v - peak; // always <= 0
+    });
+    const series = [{ label: 'Drawdown from peak realized PnL', color: '#ef5a6f', values: drawdown }];
+    renderLineChart(document.getElementById('drawdownChart'), document.getElementById('drawdown-legend'), cycles, series, dollarFmt);
+  });
+
+  section('winrate-chart', () => {
+    const days = wrtRows.map(r => r.day.slice(5)); // MM-DD, year rarely needed here
+    const series = [{ label: 'Daily win rate', color: PNL_SERIES_COLORS[0],
+                       values: wrtRows.map(r => r.win_rate * 100) }];
+    renderLineChart(document.getElementById('winrateChart'), document.getElementById('winrate-legend'), days, series, v => pct(v/100));
+  });
+}
+
+document.querySelectorAll('.range-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (activeRange === btn.dataset.range) return;
+    activeRange = btn.dataset.range;
+    document.querySelectorAll('.range-btn').forEach(b => b.classList.toggle('active', b === btn));
+    renderTimeSeriesCharts();
+  });
+});
 
 // Half-donut "Fear & Greed" gauge - a semicircle swept from 180deg (left,
 // index=0) to 0deg (right, index=100), same polar-to-cartesian math either
@@ -1601,10 +1724,8 @@ async function refresh() {
   const leaderboardResp = lastGood.leaderboardResp;
   const lineage = lastGood.lineage;
   const tradesResp = lastGood.tradesResp;
-  const pnlHistory = lastGood.pnlHistory;
   const regimeStats = lastGood.regimeStats;
   const sentiment = lastGood.sentiment;
-  const winRateTrend = lastGood.winRateTrend;
   const durationHistogram = lastGood.durationHistogram;
   const lifespanHistogram = lastGood.lifespanHistogram;
   const generationDepth = lastGood.generationDepth;
@@ -1668,56 +1789,7 @@ async function refresh() {
     }).join('');
   });
 
-  section('pnl-chart', () => {
-    const cycles = pnlHistory.map(r => 'Cycle ' + r.cycle);
-    const series = [
-      { label: 'Swarm total realized PnL', color: PNL_SERIES_COLORS[0],
-        values: pnlHistory.map(r => r.total_realized_pnl) },
-      { label: "Current best agent's total PnL", color: PNL_SERIES_COLORS[1],
-        values: pnlHistory.map(r => r.best_total_pnl) },
-    ];
-    renderLineChart(document.getElementById('pnlChart'), document.getElementById('pnl-legend'), cycles, series);
-  });
-
-  section('population-chart', () => {
-    // Answers "how many agents has this actually evaluated over time" -
-    // alive count (population size), active traders (how many are actually
-    // allowed to open positions right now), and professional-tier count
-    // (proven, self-sustaining lineages), all per cycle from the same
-    // population_cycles history the PnL chart above already uses.
-    const cycles = pnlHistory.map(r => 'Cycle ' + r.cycle);
-    const series = [
-      { label: 'Alive agents', color: PNL_SERIES_COLORS[0], values: pnlHistory.map(r => r.alive_count) },
-      { label: 'Active traders', color: PNL_SERIES_COLORS[1], values: pnlHistory.map(r => r.active_trader_count) },
-      { label: 'Professional tier', color: PNL_SERIES_COLORS[2], values: pnlHistory.map(r => r.professional_count) },
-    ];
-    renderLineChart(document.getElementById('popChart'), document.getElementById('pop-legend'), cycles, series, countFmt);
-  });
-
-  section('drawdown-chart', () => {
-    // Running peak of swarm-wide realized PnL vs current - the "underwater"
-    // view. Pairs with the live circuit breaker's own drawdown trip, but
-    // this is realized-PnL-based (works in paper mode too), not real
-    // account equity (that's live-only - see engine/orchestrator.py).
-    const cycles = pnlHistory.map(r => 'Cycle ' + r.cycle);
-    let peak = -Infinity;
-    const drawdown = pnlHistory.map(r => {
-      const v = r.total_realized_pnl || 0;
-      peak = Math.max(peak, v);
-      return v - peak; // always <= 0
-    });
-    const series = [{ label: 'Drawdown from peak realized PnL', color: '#ef5a6f', values: drawdown }];
-    renderLineChart(document.getElementById('drawdownChart'), document.getElementById('drawdown-legend'), cycles, series, dollarFmt);
-  });
-
-  section('winrate-chart', () => {
-    // Daily win rate, not just one all-time number - shows whether the
-    // swarm's edge is improving, flat, or decaying.
-    const days = winRateTrend.map(r => r.day.slice(5)); // MM-DD, year rarely needed here
-    const series = [{ label: 'Daily win rate', color: PNL_SERIES_COLORS[0],
-                       values: winRateTrend.map(r => r.win_rate * 100) }];
-    renderLineChart(document.getElementById('winrateChart'), document.getElementById('winrate-legend'), days, series, v => pct(v/100));
-  });
+  renderTimeSeriesCharts();
 
   section('duration-chart', () => {
     renderBarChart(
