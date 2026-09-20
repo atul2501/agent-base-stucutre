@@ -51,6 +51,24 @@ BOUNDS = {
     "take_profit_pct": (2.0, 22.0),
     "max_hold_hours": (12, 48),
     "position_size_pct": (2.0, 25.0),        # % of agent balance risked as notional
+    # ATR-adaptive exit distances (see strategy/signals.py::compute_exit_levels) -
+    # the actual stop/target used at entry is ATR_mult * current ATR%, clamped
+    # to [0.5x, 2x] of the pct-based genes above, so the same genome's exits
+    # widen in a volatile market and tighten in a calm one instead of always
+    # using the same fixed %.
+    "atr_stop_mult": (0.5, 4.0),
+    "atr_target_mult": (1.5, 12.0),
+    # Trailing stop: arms once price has captured this fraction of the
+    # distance to take_profit, then trails `trail_distance_atr_mult` ATRs
+    # behind the best price seen - only ever tightens, never loosens.
+    "trail_activation_frac": (0.25, 0.9),
+    "trail_distance_atr_mult": (0.5, 3.0),
+    # Partial take-profit: closes this fraction of the position once price
+    # reaches partial_tp_r_mult of the way to the full target, moving the
+    # stop to breakeven on the remainder. 0.0 effectively disables it for a
+    # genome - a valid, evolvable "off" state, not a bug.
+    "partial_tp_frac": (0.0, 0.5),
+    "partial_tp_r_mult": (0.3, 0.8),
 }
 
 # Fields where two values must stay ordered (lo < hi) - handled specially in
@@ -77,6 +95,12 @@ _TP_RESAMPLE_CEILING_MULT = 1.4
 # from real SOL move-rate data - a deliberately loose, order-of-magnitude
 # guard rather than a precise timing model.
 _MIN_HOLD_HOURS_PER_TP_PCT = 4.0
+
+# Same reward:risk floor as _MIN_TP_SL_RATIO, applied to the ATR-multiple
+# exit genes instead of the pct-based ones - keeps the ATR-adaptive exit
+# distance computed in compute_exit_levels() coherent even before it gets
+# further clamped against the pct-based genes at entry time.
+_MIN_ATR_RATIO = 2.0
 
 
 def _enforce_tp_sl_ratio(stop_loss_pct: float, take_profit_pct: float) -> tuple[float, float]:
@@ -122,6 +146,32 @@ def _resample_tp_sl_ratio(rng: random.Random, stop_loss_pct: float, take_profit_
     upper = min(floor * _TP_RESAMPLE_CEILING_MULT, cap)
     take_profit_pct = min(floor, cap) if upper <= floor else round(rng.uniform(floor, upper), 2)
     return stop_loss_pct, take_profit_pct
+
+
+def _enforce_atr_ratio(atr_stop_mult: float, atr_target_mult: float) -> tuple[float, float]:
+    """Deterministic (ceil-floor) form of the atr_stop_mult:atr_target_mult
+    ratio floor - used by from_dict(), same reasoning as
+    _enforce_tp_sl_ratio."""
+    lo, hi = BOUNDS["atr_stop_mult"]
+    atr_stop_mult = max(lo, min(hi, atr_stop_mult))
+    min_target = math.ceil(atr_stop_mult * _MIN_ATR_RATIO * 100) / 100
+    atr_target_mult = max(atr_target_mult, min(min_target, BOUNDS["atr_target_mult"][1]))
+    return atr_stop_mult, atr_target_mult
+
+
+def _resample_atr_ratio(rng: random.Random, atr_stop_mult: float, atr_target_mult: float) -> tuple[float, float]:
+    """rng-redraw form for genome-creation call sites, same reasoning as
+    _resample_tp_sl_ratio (avoids piling deficient draws at exactly the
+    floor)."""
+    lo, hi = BOUNDS["atr_stop_mult"]
+    atr_stop_mult = max(lo, min(hi, atr_stop_mult))
+    floor = atr_stop_mult * _MIN_ATR_RATIO
+    if atr_target_mult >= floor:
+        return atr_stop_mult, atr_target_mult
+    cap = BOUNDS["atr_target_mult"][1]
+    upper = min(floor * _TP_RESAMPLE_CEILING_MULT, cap)
+    atr_target_mult = min(floor, cap) if upper <= floor else round(rng.uniform(floor, upper), 2)
+    return atr_stop_mult, atr_target_mult
 
 
 def _enforce_hold_window(take_profit_pct: float, max_hold_hours: float) -> float:
@@ -192,6 +242,12 @@ class Genome:
     take_profit_pct: float
     max_hold_hours: float
     position_size_pct: float
+    atr_stop_mult: float
+    atr_target_mult: float
+    trail_activation_frac: float
+    trail_distance_atr_mult: float
+    partial_tp_frac: float
+    partial_tp_r_mult: float
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -212,6 +268,7 @@ class Genome:
             d["max_atr_pct"] = round(d["min_atr_pct"] + 0.1, 4)
         d["stop_loss_pct"], d["take_profit_pct"] = _enforce_tp_sl_ratio(d["stop_loss_pct"], d["take_profit_pct"])
         d["max_hold_hours"] = _enforce_hold_window(d["take_profit_pct"], d["max_hold_hours"])
+        d["atr_stop_mult"], d["atr_target_mult"] = _enforce_atr_ratio(d["atr_stop_mult"], d["atr_target_mult"])
         return cls(**d)
 
     @classmethod
@@ -228,6 +285,9 @@ class Genome:
             rng, round(u("stop_loss_pct"), 2), round(u("take_profit_pct"), 2)
         )
         max_hold_hours = _enforce_hold_window(take_profit_pct, round(u("max_hold_hours"), 1))
+        atr_stop_mult, atr_target_mult = _resample_atr_ratio(
+            rng, round(u("atr_stop_mult"), 2), round(u("atr_target_mult"), 2)
+        )
 
         return cls(
             coin=coin,
@@ -264,6 +324,12 @@ class Genome:
             take_profit_pct=take_profit_pct,
             max_hold_hours=max_hold_hours,
             position_size_pct=round(u("position_size_pct"), 2),
+            atr_stop_mult=atr_stop_mult,
+            atr_target_mult=atr_target_mult,
+            trail_activation_frac=round(u("trail_activation_frac"), 2),
+            trail_distance_atr_mult=round(u("trail_distance_atr_mult"), 2),
+            partial_tp_frac=round(u("partial_tp_frac"), 2),
+            partial_tp_r_mult=round(u("partial_tp_r_mult"), 2),
         )
 
     def mutate(self, rng: random.Random, mutation_rate: float = 0.25) -> "Genome":
@@ -296,6 +362,9 @@ class Genome:
             rng, child.stop_loss_pct, child.take_profit_pct
         )
         child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
+        child.atr_stop_mult, child.atr_target_mult = _resample_atr_ratio(
+            rng, child.atr_stop_mult, child.atr_target_mult
+        )
 
         return child
 
@@ -318,5 +387,8 @@ class Genome:
             rng, child.stop_loss_pct, child.take_profit_pct
         )
         child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
+        child.atr_stop_mult, child.atr_target_mult = _resample_atr_ratio(
+            rng, child.atr_stop_mult, child.atr_target_mult
+        )
 
         return child

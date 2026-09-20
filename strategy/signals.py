@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from market.hyperliquid_client import MarketSnapshot
-from strategy.genome import Genome
+from strategy.genome import _MIN_TP_SL_RATIO, Genome
 from strategy.indicators import (
     adx, atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap,
 )
@@ -329,6 +329,26 @@ def evaluate_entry(genome: Genome, f: Features) -> Signal:
     return Signal(candidate, confidence, score, reasons, ambiguous=False)
 
 
+def _poll_council_votes(
+    council_genomes: list[Genome],
+    snap: MarketSnapshot,
+    prev_open_interest: float | None,
+    htf_trend_up: bool | None,
+) -> tuple[int, int]:
+    """Runs every council agent's OWN genome against the same market
+    snapshot and tallies (long_votes, short_votes). Shared by
+    council_consult (entries) and council_oppose_position (open positions)."""
+    long_votes = short_votes = 0
+    for genome in council_genomes:
+        features = build_features(snap, genome, prev_open_interest, htf_trend_up)
+        vote = evaluate_entry(genome, features)
+        if vote.action == "long":
+            long_votes += 1
+        elif vote.action == "short":
+            short_votes += 1
+    return long_votes, short_votes
+
+
 def council_consult(
     candidate: Signal,
     snap: MarketSnapshot,
@@ -350,14 +370,7 @@ def council_consult(
     unchanged (still ambiguous) so the caller can fall back to Ollama, same
     as before this existed.
     """
-    long_votes = short_votes = 0
-    for genome in council_genomes:
-        features = build_features(snap, genome, prev_open_interest, htf_trend_up)
-        vote = evaluate_entry(genome, features)
-        if vote.action == "long":
-            long_votes += 1
-        elif vote.action == "short":
-            short_votes += 1
+    long_votes, short_votes = _poll_council_votes(council_genomes, snap, prev_open_interest, htf_trend_up)
 
     active = long_votes + short_votes
     if active < max(min_active_voters, 1):
@@ -382,32 +395,268 @@ def council_consult(
     return candidate
 
 
-def evaluate_exit(genome: Genome, trade_row, f: Features, now: datetime | None = None) -> tuple[str, str] | None:
-    """Returns (result, reason) if the open position should close, else None.
+def council_oppose_position(
+    side: str,
+    snap: MarketSnapshot,
+    prev_open_interest: float | None,
+    htf_trend_up: bool | None,
+    council_genomes: list[Genome],
+    quorum_pct: float,
+    min_active_voters: int,
+) -> tuple[bool, bool, str]:
+    """Ensemble check for an OPEN position: does the council now favor the
+    OPPOSITE side? This never closes or overrides anything itself - callers
+    only use the result to decide whether to pull the position's stop
+    tighter (see _council_tighten_stop), never to loosen a stop or force a
+    close. Live-only advisory layer; never called from the backtester, since
+    a live council/LLM opinion can't be replayed historically (see
+    engine/orchestrator.py::_process_exits).
+
+    Returns (opposed, inconclusive, reason):
+      - opposed=True: quorum of active voters now favor the opposite side -
+        caller should tighten the stop.
+      - inconclusive=True (opposed always False here): too few council
+        members took a directional stance this cycle to mean anything -
+        caller may escalate to Ollama, same as the entry-side ladder.
+      - both False: enough votes were cast but they didn't reach quorum
+        against the held side - resolved, no action needed, no escalation.
+    """
+    long_votes, short_votes = _poll_council_votes(council_genomes, snap, prev_open_interest, htf_trend_up)
+
+    active = long_votes + short_votes
+    if active < max(min_active_voters, 1):
+        return False, True, ""
+
+    oppose = short_votes if side == "long" else long_votes
+    if oppose / active >= quorum_pct:
+        opposite = "short" if side == "long" else "long"
+        return True, False, f"exit council: {oppose}/{active} active voters now favor {opposite} - tightening stop"
+    return False, False, ""
+
+
+def _row_get(row, key: str, default=None):
+    """Uniform accessor for both sqlite3.Row (raises IndexError on a
+    missing/None-absent key) and a plain dict (raises KeyError) - lets
+    evaluate_position() work against a full DB-backed trade row AND a
+    minimal hand-built dict (e.g. backtest/stress_test.py's trade rows,
+    which predate the ATR-adaptive/trailing/partial columns) without two
+    code paths."""
+    try:
+        value = row[key]
+    except (KeyError, IndexError):
+        return default
+    return default if value is None else value
+
+
+@dataclass
+class ExitLevels:
+    stop_loss: float
+    take_profit: float
+    partial_target: float | None
+    partial_frac: float
+
+
+def compute_exit_levels(genome: Genome, side: str, entry_price: float, atr_pct: float) -> ExitLevels:
+    """ATR-adaptive stop/target computed once at entry (and re-used
+    unchanged by the trailing-stop logic in evaluate_position, which only
+    ever moves stop_loss - never take_profit or the partial target).
+
+    Blends the genome's own evolved stop_loss_pct/take_profit_pct (the
+    sanity envelope, still meaningful and still mutated/evolved) with a
+    volatility-scaled distance driven by the CURRENT ATR% at entry, so the
+    same genome's exits widen in a chaotic market and tighten in a calm
+    one instead of always using the same fixed %. The ATR-based distance
+    is clamped to [0.5x, 2x] of the pct-based distance so a freak ATR
+    reading at entry can't produce a nonsensical stop/target, and the
+    final target:stop ratio is re-floored at _MIN_TP_SL_RATIO in case
+    clamping pulled the two distances close together.
+    """
+    atr_pct = max(atr_pct, 1e-6)
+    raw_stop_pct = genome.atr_stop_mult * atr_pct
+    raw_target_pct = genome.atr_target_mult * atr_pct
+    stop_pct = min(max(raw_stop_pct, genome.stop_loss_pct * 0.5), genome.stop_loss_pct * 2.0)
+    target_pct = min(max(raw_target_pct, genome.take_profit_pct * 0.5), genome.take_profit_pct * 2.0)
+    if target_pct < stop_pct * _MIN_TP_SL_RATIO:
+        target_pct = stop_pct * _MIN_TP_SL_RATIO
+
+    if side == "long":
+        stop_loss = entry_price * (1 - stop_pct / 100.0)
+        take_profit = entry_price * (1 + target_pct / 100.0)
+    else:
+        stop_loss = entry_price * (1 + stop_pct / 100.0)
+        take_profit = entry_price * (1 - target_pct / 100.0)
+
+    partial_target = None
+    if genome.partial_tp_frac > 0:
+        partial_dist = (take_profit - entry_price) * genome.partial_tp_r_mult
+        partial_target = entry_price + partial_dist
+
+    return ExitLevels(stop_loss=stop_loss, take_profit=take_profit,
+                       partial_target=partial_target, partial_frac=genome.partial_tp_frac)
+
+
+def _blended_result(trade_row, leg_pnl_pct: float) -> str:
+    """Win/loss label for a closing leg, accounting for any partial
+    take-profit already realized on this trade. Size-weighted blend of the
+    partial leg's pnl_pct and this (remaining-size) leg's pnl_pct, so a
+    position that banked a real partial profit and then closes its
+    remainder at/near breakeven is correctly labeled a win overall for
+    do-or-die purposes, instead of the remaining leg's own small loss
+    killing an agent that was actually net profitable on the trade. With
+    no partial taken (the default), partial_frac_taken is 0 and this
+    reduces to exactly leg_pnl_pct > 0 - unchanged prior behavior."""
+    partial_frac_taken = _row_get(trade_row, "partial_frac_taken", 0.0) or 0.0
+    partial_pnl_pct = _row_get(trade_row, "partial_pnl_pct", 0.0) or 0.0
+    blended = partial_frac_taken * partial_pnl_pct + (1 - partial_frac_taken) * leg_pnl_pct
+    return "win" if blended > 0 else "loss"
+
+
+def _trailing_stop_candidate(genome: Genome, side: str, entry: float, take_profit: float,
+                              current_stop: float, price: float, atr_pct: float) -> float | None:
+    """Returns a new (tighter) stop_loss price once the position has moved
+    favorably past `trail_activation_frac` of the distance to target, or
+    None if it isn't armed yet or hasn't improved - the stop only ever
+    moves in the favorable direction, never loosens."""
+    if genome.trail_distance_atr_mult <= 0:
+        return None
+    activation_dist = abs(take_profit - entry) * genome.trail_activation_frac
+    trail_dist = max(atr_pct, 0.0) / 100.0 * price * genome.trail_distance_atr_mult
+    if trail_dist <= 0:
+        return None
+    if side == "long":
+        if price < entry + activation_dist:
+            return None
+        candidate = price - trail_dist
+        return candidate if candidate > current_stop else None
+    else:
+        if price > entry - activation_dist:
+            return None
+        candidate = price + trail_dist
+        return candidate if candidate < current_stop else None
+
+
+def _council_tighten_stop(side: str, current_stop: float, price: float, tighten_frac: float) -> float | None:
+    """Pulls the stop `tighten_frac` of the way from current_stop toward the
+    current price, for the advisory exit-council layer (see
+    council_oppose_position). Mirrors _trailing_stop_candidate's invariant -
+    only ever returns a value STRICTER than current_stop, never looser;
+    returns None if the computed candidate wouldn't actually tighten
+    anything (e.g. tighten_frac <= 0)."""
+    if side == "long":
+        candidate = current_stop + (price - current_stop) * tighten_frac
+        return candidate if candidate > current_stop else None
+    else:
+        candidate = current_stop - (current_stop - price) * tighten_frac
+        return candidate if candidate < current_stop else None
+
+
+@dataclass
+class ExitAction:
+    """One cycle's worth of exit decision for an open position.
+
+    kind:
+      "none"    - nothing to do this cycle.
+      "trail"   - tighten trade_row's stored stop_loss to new_stop_loss;
+                  position stays open.
+      "partial" - close close_fraction of the remaining size at market
+                  now, move the stop to new_stop_loss (breakeven), and
+                  record partial_frac_taken/partial_pnl_pct on the trade
+                  row; position stays open for the rest.
+      "close"   - close the entire remaining position; `result` is the
+                  do-or-die win/loss label.
+    """
+    kind: str
+    result: str | None = None
+    reason: str = ""
+    new_stop_loss: float | None = None
+    close_fraction: float = 1.0
+    pnl_pct: float = 0.0
+
+
+def evaluate_position(genome: Genome, trade_row, f: Features, now: datetime | None = None) -> ExitAction:
+    """Single source of truth for what should happen to an open position
+    this cycle - partial take-profit, trailing-stop tightening, or a full
+    close (take-profit / stop-loss / max-hold). Used identically by live
+    trading (engine/orchestrator.py) and the backtester
+    (backtest/engine.py) so the two can never drift into different exit
+    behavior - see evaluate_exit() below for the narrower backward-
+    compatible wrapper still used by backtest/stress_test.py.
 
     `now` defaults to wall-clock time for live trading; the backtest engine
-    (backtest/engine.py) passes the simulated candle timestamp instead so
-    the exact same function drives both live and backtested max-hold logic.
+    passes the simulated candle timestamp instead so the exact same
+    function drives both live and backtested max-hold logic.
     """
     side = trade_row["side"]
     entry = trade_row["entry_price"]
     price = f.mid_price
+
+    stop_loss = _row_get(trade_row, "stop_loss")
+    take_profit = _row_get(trade_row, "take_profit")
+    if stop_loss is None or take_profit is None:
+        # Backward-compat fallback for a trade row that predates stored
+        # price levels (an old open trade from before this feature, or a
+        # caller like backtest/stress_test.py that hand-builds a minimal
+        # row) - recompute fresh off entry using the genome's plain pct
+        # genes, exactly matching the pre-ATR-adaptive behavior.
+        if side == "long":
+            stop_loss = entry * (1 - genome.stop_loss_pct / 100)
+            take_profit = entry * (1 + genome.take_profit_pct / 100)
+        else:
+            stop_loss = entry * (1 + genome.stop_loss_pct / 100)
+            take_profit = entry * (1 - genome.take_profit_pct / 100)
 
     if side == "long":
         pnl_pct = (price - entry) / entry * 100.0
     else:
         pnl_pct = (entry - price) / entry * 100.0
 
-    if pnl_pct >= genome.take_profit_pct:
-        return "win", f"take profit hit ({pnl_pct:.2f}%)"
-    if pnl_pct <= -genome.stop_loss_pct:
-        return "loss", f"stop loss hit ({pnl_pct:.2f}%)"
+    partial_taken = bool(_row_get(trade_row, "partial_taken", 0))
+    partial_target = _row_get(trade_row, "partial_target")
 
+    # 1. Partial take-profit - fires at most once per trade.
+    if not partial_taken and partial_target is not None and genome.partial_tp_frac > 0:
+        hit = price >= partial_target if side == "long" else price <= partial_target
+        if hit:
+            return ExitAction(kind="partial", reason=f"partial target hit ({pnl_pct:.2f}%)",
+                               close_fraction=genome.partial_tp_frac, new_stop_loss=entry, pnl_pct=pnl_pct)
+
+    # 2. Full take-profit / stop-loss against the (possibly trailed) stored levels.
+    if side == "long":
+        if price >= take_profit:
+            return ExitAction(kind="close", result="win", reason=f"take profit hit ({pnl_pct:.2f}%)", pnl_pct=pnl_pct)
+        if price <= stop_loss:
+            return ExitAction(kind="close", result=_blended_result(trade_row, pnl_pct),
+                               reason=f"stop loss hit ({pnl_pct:.2f}%)", pnl_pct=pnl_pct)
+    else:
+        if price <= take_profit:
+            return ExitAction(kind="close", result="win", reason=f"take profit hit ({pnl_pct:.2f}%)", pnl_pct=pnl_pct)
+        if price >= stop_loss:
+            return ExitAction(kind="close", result=_blended_result(trade_row, pnl_pct),
+                               reason=f"stop loss hit ({pnl_pct:.2f}%)", pnl_pct=pnl_pct)
+
+    # 3. Max-hold time fallback.
     opened_at = datetime.fromisoformat(trade_row["opened_at"])
     current_time = now if now is not None else datetime.now(timezone.utc)
     hours_open = (current_time - opened_at).total_seconds() / 3600.0
     if hours_open >= genome.max_hold_hours:
-        result = "win" if pnl_pct > 0 else "loss"
-        return result, f"max hold {genome.max_hold_hours}h reached ({pnl_pct:.2f}%)"
+        return ExitAction(kind="close", result=_blended_result(trade_row, pnl_pct),
+                           reason=f"max hold {genome.max_hold_hours}h reached ({pnl_pct:.2f}%)", pnl_pct=pnl_pct)
 
+    # 4. Trailing stop tightening - only reached if nothing above closed/partialed this cycle.
+    new_stop = _trailing_stop_candidate(genome, side, entry, take_profit, stop_loss, price, f.atr_pct)
+    if new_stop is not None:
+        return ExitAction(kind="trail", new_stop_loss=new_stop, pnl_pct=pnl_pct)
+
+    return ExitAction(kind="none", pnl_pct=pnl_pct)
+
+
+def evaluate_exit(genome: Genome, trade_row, f: Features, now: datetime | None = None) -> tuple[str, str] | None:
+    """Narrower backward-compatible view of evaluate_position(): returns
+    (result, reason) on a full close, else None - trailing/partial-take-
+    profit activity (which don't close the position) are invisible to this
+    interface. Still used by backtest/stress_test.py, whose extreme-move
+    scenarios only ever care about a full close or none."""
+    action = evaluate_position(genome, trade_row, f, now=now)
+    if action.kind == "close":
+        return action.result, action.reason
     return None

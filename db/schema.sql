@@ -46,6 +46,16 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_reason TEXT,
     regime TEXT,                                 -- trending-up | trending-down | ranging, at entry
     entry_funding REAL DEFAULT 0.0,              -- funding rate in effect at entry, for approximating hold cost at close
+    -- ATR-adaptive/trailing/partial exit bookkeeping (see
+    -- strategy/signals.py::evaluate_position). remaining_size shrinks on a
+    -- partial close; stop_loss (above) is mutated in place as the trailing
+    -- stop tightens and moved to breakeven after a partial fires.
+    remaining_size REAL,
+    partial_target REAL,                         -- price level for the (optional) partial take-profit; NULL if unused
+    partial_taken INTEGER NOT NULL DEFAULT 0,
+    partial_frac_taken REAL NOT NULL DEFAULT 0.0, -- fraction of the ORIGINAL size closed by the partial, for _blended_result
+    partial_pnl_pct REAL NOT NULL DEFAULT 0.0,    -- pnl_pct at which the partial closed, for _blended_result
+    partial_realized_pnl REAL NOT NULL DEFAULT 0.0, -- $ pnl already credited to the agent at partial-close time, folded into trades.pnl at final close
     opened_at TEXT NOT NULL,
     closed_at TEXT,
     FOREIGN KEY (agent_id) REFERENCES agents(id)

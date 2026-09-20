@@ -194,6 +194,13 @@ def main() -> None:
                 db.set_meta("live_breaker_tripped", "0")
                 db.set_meta("live_breaker_reason", "")
                 db.set_meta("live_peak_equity", "")
+                # A genuinely fresh chance for the price feed too, in case
+                # the trip was staleness-caused and the operator has since
+                # fixed the feed - otherwise the persisted count (see
+                # engine/orchestrator.py) would immediately re-trip on the
+                # very next cycle.
+                db.set_meta("live_stale_last_price", "")
+                db.set_meta("live_stale_price_count", "0")
                 log.info("Cleared. Live trading will resume from the next run of `python3 main.py` "
                          "(without --clear-live-breaker) if TRADING_MODE=live.")
             return
@@ -242,6 +249,7 @@ def main() -> None:
                 log.exception("Failed to initialize live executor - falling back to paper for this run")
 
         backtest_candles, backtest_funding = [], []
+        htf_candles: list[dict] = []
         regime_windows: list[tuple[list[dict], list[tuple[int, float, float]]]] = []
         if CONFIG.backtest_enabled:
             try:
@@ -254,6 +262,19 @@ def main() -> None:
             except Exception:
                 log.exception("Failed to fetch historical data for backtest pre-screening - "
                                "new agents will be born from unscreened random/mutated genomes this run")
+
+            try:
+                # Same recent window, at the higher timeframe - lets the
+                # backtest evaluate the higher-timeframe trend filter for
+                # real instead of treating it as neutral (see
+                # backtest/engine.py). Best-effort: failure just keeps the
+                # previous (neutral) treatment, same as before this existed.
+                htf_candles = hl.get_candles(CONFIG.token, CONFIG.higher_timeframe, CONFIG.backtest_lookback_hours)
+                log.info("Higher-timeframe backtest data ready: %d %s candles",
+                          len(htf_candles), CONFIG.higher_timeframe)
+            except Exception:
+                log.exception("Failed to fetch higher-timeframe backtest data - the HTF trend filter "
+                               "will stay neutral in backtest scoring this run")
 
             try:
                 regime_candles = hl.get_candles(CONFIG.token, CONFIG.backtest_regime_timeframe,
@@ -275,7 +296,7 @@ def main() -> None:
                                "screened against the recent window only this run")
 
         population = Population(db, CONFIG, backtest_candles=backtest_candles, backtest_funding=backtest_funding,
-                                 regime_windows=regime_windows)
+                                 regime_windows=regime_windows, htf_candles=htf_candles)
         population.seed_if_empty()
         orchestrator = Orchestrator(db, hl, population, CONFIG, live=live_executor)
 

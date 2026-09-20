@@ -6,7 +6,7 @@ order sizing and exits."""
 
 import pytest
 
-from strategy.genome import BOUNDS, _MIN_TP_SL_RATIO, Genome, genome_distance
+from strategy.genome import BOUNDS, _MIN_ATR_RATIO, _MIN_TP_SL_RATIO, Genome, genome_distance
 
 
 def _assert_within_bounds(genome: Genome) -> None:
@@ -22,6 +22,7 @@ def _assert_invariants(genome: Genome) -> None:
     assert genome.max_atr_pct > genome.min_atr_pct
     assert genome.take_profit_pct >= genome.stop_loss_pct * _MIN_TP_SL_RATIO - 1e-9
     assert genome.max_hold_hours <= BOUNDS["max_hold_hours"][1]
+    assert genome.atr_target_mult >= genome.atr_stop_mult * _MIN_ATR_RATIO - 1e-9
 
 
 class TestRandom:
@@ -63,7 +64,8 @@ class TestCrossover:
         parent_b = Genome.random("SOL", "1m", rng)
         child = parent_a.crossover(parent_b, rng)
         for field_name in BOUNDS.keys():
-            if field_name in ("ema_slow", "max_atr_pct", "stop_loss_pct", "take_profit_pct", "max_hold_hours"):
+            if field_name in ("ema_slow", "max_atr_pct", "stop_loss_pct", "take_profit_pct", "max_hold_hours",
+                              "atr_target_mult"):
                 continue  # these can be adjusted afterward to restore invariants
             value = getattr(child, field_name)
             assert value in (getattr(parent_a, field_name), getattr(parent_b, field_name))

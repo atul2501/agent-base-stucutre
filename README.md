@@ -120,8 +120,26 @@ actually works rather than everyone converging on one hand-picked setup.
    for a judgment call instead of guessing - the "self-understanding"
    fallback. Any failure (no API key, rate limited, unreachable) falls back
    to holding rather than crashing.
-6. Exits are rule-based: stop loss / take profit / max hold time (all
-   genome parameters).
+6. Exits are rule-based and ATR-adaptive (`strategy/signals.py::evaluate_position`,
+   `compute_exit_levels`): stop-loss/take-profit distances blend each
+   agent's evolved `stop_loss_pct`/`take_profit_pct` with the CURRENT ATR%
+   at entry, so the same genome's exits widen in a volatile market and
+   tighten in a calm one instead of always using the same fixed %. Genomes
+   also evolve an optional trailing stop (arms after price captures
+   `trail_activation_frac` of the distance to target, then trails
+   `trail_distance_atr_mult` ATRs behind the best price - only ever
+   tightens) and an optional partial take-profit (closes `partial_tp_frac`
+   of the position at `partial_tp_r_mult` of the way to target, moving the
+   stop to breakeven on the rest). A max-hold time is still the fallback
+   exit if neither fires.
+7. An optional **exit council** (`EXIT_COUNCIL_ENABLED`, off by default) adds
+   one more advisory check on top of all of the above for a position with
+   nothing else to do this cycle: does the same council/Ollama ensemble used
+   for entries now favor the *opposite* side? If so, it pulls the stop
+   tighter - never loosens it, never forces a close - the same fail-safe
+   philosophy as step 5, just applied to an open position instead of a new
+   one. Live-only; the backtester never sees it, for the same reason it
+   never sees the council/Ollama entry escalation either (see next section).
 
 Existing agents from before this indicator set existed load fine -
 `Genome.from_dict` fills in any fields an older genome is missing with
@@ -147,9 +165,13 @@ still has to win its first real trade to survive, exactly as before.
 
 Honesty note: Hyperliquid's public API has no historical series for order
 book depth or open interest (point-in-time snapshots only), so those two
-confirmations are neutral during backtesting. Funding and mark/oracle
-premium DO have real historical series (`Info.funding_history` includes
-both) and are used for real. Hyperliquid also caps a single candle request
+confirmations stay neutral during backtesting - there's no historical data
+to backtest them against. Funding and mark/oracle premium DO have real
+historical series (`Info.funding_history` includes both) and are used for
+real. The higher-timeframe trend filter, unlike order book/OI, only needs
+price data (which IS available historically) - see "Higher-timeframe trend
+filter" below for how it's backtested for real too. Hyperliquid also caps a
+single candle request
 at ~5000 bars - `BACKTEST_LOOKBACK_HOURS` should stay safely under whatever
 that means at your `TIMEFRAME` (e.g. ~17 days at 5m, ~3.5 days at 1m).
 Disable entirely with `BACKTEST_ENABLED=false` if you'd rather agents stay
@@ -161,6 +183,14 @@ purely random/mutated.
   strongly the signal was confirmed (`signal.confidence`, floored at 30%
   of the genome's intended size) instead of every approved setup risking
   the same fixed %, regardless of how marginal or strong it was.
+- **Risk-normalized sizing** (`trading/paper_executor.py::risk_normalized_size_pct`):
+  since exits are now ATR-adaptive (above), the actual stop distance for a
+  trade can be wider than the genome's own baseline `stop_loss_pct` in a
+  volatile market. Position size is shrunk proportionally whenever that
+  happens, so dollar risk-at-stop stays anchored to what the genome's
+  evolved baseline implies rather than silently growing with volatility.
+  One-directional: never sizes UP for a tighter-than-baseline stop, only
+  ever down for a wider one.
 - **Risk-adjusted fitness**: ranking (`AgentRow.fitness` in `db/database.py`)
   is % return on starting balance, not raw PnL dollars - a $5 profit on a
   $50 balance ranks above a $5 profit on a $5000 one.
@@ -192,10 +222,14 @@ Every decision also checks a slower timeframe's trend (`HIGHER_TIMEFRAME`,
 default `1h`, fixed EMA(20,50) - not genome-tunable, a shared macro context
 rather than a per-agent knob) - trading with the bigger trend agrees for
 +1, trading against it costs -2 (a stronger red flag than most single
-confirmations). This is live-only: backtesting it properly would need a
-second historical candle series time-aligned per bar without introducing
-lookahead bias, which wasn't worth rushing - `htf_trend_up=None` during
-backtesting is treated as neutral, same as order book/open interest.
+confirmations). Unlike order book imbalance/open interest, this only needs
+price data, so it's now backtested for real too (`backtest/engine.py::_precompute_htf`/
+`_htf_trend_at`): time-aligned per bar and only ever reads a higher-timeframe
+candle that had fully closed as of that bar (no lookahead). `main.py` and
+`engine/orchestrator.py::_refresh_backtest_window` fetch the higher-timeframe
+candles for the same recent window and pass them through
+`Population.htf_candles`; if that fetch fails, backtesting quietly falls
+back to the previous neutral treatment rather than blocking.
 
 ### Ollama runs in the cloud by default - no local model needed
 
@@ -208,6 +242,30 @@ key yet), `ready`, `rate_limited`, `invalid_api_key`, or `unreachable` -
 trading keeps working in every state, just without the LLM tie-breaker
 when it isn't `ready`. To use a local model instead, set
 `OLLAMA_HOST=http://localhost:11434` and `ollama pull <model>` first.
+
+Every cycle's still-ambiguous signals (after the free rule-based/council
+checks) are resolved in **one batched request** (`reasoning/ollama_advisor.py::consult_batch`)
+instead of one independent call per agent - a cycle where many agents are
+ambiguous at once used to mean one sequential blocking HTTP round-trip per
+agent (each up to `OLLAMA_TIMEOUT_SECONDS`), which could stall the cycle and
+burn through rate limits fast at scale. A malformed response for one
+candidate in the batch only holds that one candidate, not the whole batch.
+
+**Exit council** (`EXIT_COUNCIL_ENABLED=true`, off by default) runs the exact
+same council-then-Ollama ladder against *open* positions instead of new
+candidates: for a position with nothing else to do this cycle (no
+partial/trail/close fired), the council genomes vote on the current
+snapshot again; if enough of them now favor the opposite side, the stop is
+pulled `EXIT_COUNCIL_TIGHTEN_FRAC` (default `0.5`) of the way toward the
+current price. If the council itself has too few active voters to mean
+anything, it's escalated to Ollama (`reasoning/ollama_advisor.py::consult_exit_batch`,
+also batched once per cycle) with a strictly narrower question - tighten or
+not - since this layer can never loosen a stop or force a close, a failed or
+malformed response just leaves the deterministic stop exactly where it was.
+Deliberately live-only: like the entry-side council/Ollama check, it's never
+invoked by the backtester (`backtest/engine.py`), since a live LLM/ensemble
+opinion can't be replayed historically and backtested/live exit behavior
+must never drift apart.
 
 ## Trading mode + network
 
@@ -243,6 +301,37 @@ When live:
   (`user_state`) before every adjustment rather than trusted from local
   bookkeeping. See `trading/live_executor.py` and
   `engine/orchestrator.py:_sync_live_exposure`.
+- **Circuit breaker**: trips on drawdown past `LIVE_MAX_DRAWDOWN_PCT`, a
+  fast single-day loss past `LIVE_MAX_DAILY_LOSS_PCT`, or the price feed
+  reporting the exact same price for `LIVE_STALE_PRICE_CYCLES` consecutive
+  cycles (a frozen feed, more dangerous than a merely quiet market). Trips
+  flatten the real position immediately and stay tripped - persisted to the
+  DB, surviving a restart - until a human runs `python3 main.py --clear-live-breaker`.
+  The stale-price counter itself is also persisted (not just the trip),
+  so a restart right after a feed freeze doesn't hand back a few free
+  cycles of runway exactly when a crash/deploy might coincide with real
+  market stress.
+- **Note on scope**: the circuit breaker above only ever protects the real
+  aggregate position - it has no per-agent awareness of any individual
+  agent's stop-loss/take-profit, and there is currently no resting
+  exchange-side stop order backing up the polling `evaluate_position`/
+  circuit-breaker checks (a stalled orchestrator loop between cycles would
+  have no backstop). Placing one is feasible (the Hyperliquid SDK supports
+  trigger orders) but hasn't been implemented yet - it needs testnet
+  validation against the real order-placement API before it's safe to rely
+  on.
+
+Paper trading gets its own, separate systemic guard
+(`PAPER_CIRCUIT_BREAKER_ENABLED`, default on; `PAPER_MAX_DRAWDOWN_USD`,
+default 5000): the do-or-die mechanic already bounds a single agent's own
+risk, but nothing previously caught a correlated, swarm-wide bleed (e.g. a
+broken feature or a regime nothing in the population handles well) in the
+paper population that drives every evolutionary decision. Tracks the
+swarm-wide realized-pnl peak (`engine/orchestrator.py::_check_paper_drawdown`)
+and pauses NEW paper entries - existing open positions still exit normally -
+once the drawdown from that peak passes the threshold, auto-resuming once
+it recovers to half the threshold. No manual clear needed, unlike the live
+breaker: there's no real money at stake here.
 - The paper simulation always keeps driving the evolutionary lifecycle
   (win/die/spawn) - live orders are a real-money mirror of that, not a
   second independent decision loop, so evolution never depends on exchange

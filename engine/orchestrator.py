@@ -17,10 +17,13 @@ from agents.population import Population
 from reasoning import ollama_advisor
 from strategy.genome import Genome
 from strategy.signals import (
-    build_features, classify_regime, compute_htf_trend, council_consult, evaluate_entry, evaluate_exit,
+    _council_tighten_stop, build_features, classify_regime, compute_exit_levels, compute_htf_trend,
+    council_consult, council_oppose_position, evaluate_entry, evaluate_position,
 )
 from trading.live_executor import LiveExecutor
-from trading.paper_executor import close_paper_position, open_paper_position
+from trading.paper_executor import (
+    close_paper_position, open_paper_position, risk_normalized_size_pct, simulate_fill_price,
+)
 
 log = logging.getLogger(__name__)
 
@@ -36,13 +39,16 @@ class Orchestrator:
         self.prev_open_interest: float | None = None
         self.htf_trend_up: bool | None = None
         self.cycle = 0
-        # Circuit breaker staleness tracking - deliberately in-memory only
-        # (not persisted), so a restart gives the price feed a fresh chance
-        # rather than carrying over a stale count from before a deploy/
-        # restart. The TRIP itself (once it happens) IS persisted - see
-        # _check_circuit_breaker.
-        self._last_seen_price: float | None = None
-        self._stale_price_count = 0
+        # Circuit breaker staleness tracking - persisted to the DB (see
+        # _check_circuit_breaker) rather than in-memory-only, so a restart
+        # right after a feed freeze doesn't hand back a few fresh cycles of
+        # runway exactly when a crash/deploy might coincide with real
+        # market stress. Loaded here from whatever a previous instance
+        # last recorded; a fresh DB (no prior run) falls back to None/0.
+        last_price_raw = self.db.get_meta("live_stale_last_price")
+        self._last_seen_price: float | None = float(last_price_raw) if last_price_raw else None
+        count_raw = self.db.get_meta("live_stale_price_count")
+        self._stale_price_count = int(count_raw) if count_raw else 0
 
     def _fetch_snapshot(self) -> MarketSnapshot | None:
         try:
@@ -61,6 +67,17 @@ class Orchestrator:
             return None
 
     def _process_exits(self, snap: MarketSnapshot) -> None:
+        # Advisory, tighten-only exit-council layer: for positions where
+        # nothing else fired this cycle, collect any whose genome-ensemble
+        # check was inconclusive (too few active voters) so they can be
+        # resolved with ONE batched Ollama call after the main loop, same
+        # two-pass pattern as _process_entries below - see
+        # strategy/signals.py::council_oppose_position.
+        # (trade_id, side, current_stop, mid_price, genome, features) - the
+        # current stop/price are captured now so the batch resolution below
+        # doesn't need to re-fetch the trade row.
+        pending_exit_ollama: list[tuple] = []
+
         for agent in self.db.list_alive_agents():
             trade_row = self.db.get_open_trade(agent.id)
             if trade_row is None:
@@ -68,11 +85,54 @@ class Orchestrator:
             genome = Genome.from_dict(agent.genome)
 
             features = build_features(snap, genome, self.prev_open_interest, self.htf_trend_up)
-            outcome = evaluate_exit(genome, trade_row, features)
-            if outcome is None:
+            action = evaluate_position(genome, trade_row, features)
+
+            if action.kind == "none":
+                current_stop = trade_row["stop_loss"]
+                if self.config.exit_council_enabled and current_stop is not None:
+                    council = self.population.council_genomes(agent.id)
+                    opposed, inconclusive, reason = council_oppose_position(
+                        trade_row["side"], snap, self.prev_open_interest, self.htf_trend_up, council,
+                        self.config.council_quorum_pct, self.config.council_min_active_voters,
+                    )
+                    if opposed:
+                        new_stop = _council_tighten_stop(
+                            trade_row["side"], current_stop, features.mid_price,
+                            self.config.exit_council_tighten_frac,
+                        )
+                        if new_stop is not None:
+                            self.db.update_trade_stop(trade_row["id"], new_stop)
+                            log.info("Agent %d exit-council tightened stop to %.4f - %s",
+                                      agent.id, new_stop, reason)
+                    elif inconclusive and self.config.ollama_enabled:
+                        pending_exit_ollama.append(
+                            (trade_row["id"], trade_row["side"], current_stop, features.mid_price, genome, features)
+                        )
                 continue
 
-            result, reason = outcome
+            if action.kind == "trail":
+                self.db.update_trade_stop(trade_row["id"], action.new_stop_loss)
+                continue
+
+            remaining_size = trade_row["remaining_size"] or trade_row["size"]
+
+            if action.kind == "partial":
+                close_size = remaining_size * action.close_fraction
+                new_remaining = remaining_size - close_size
+                _exit_price, partial_pnl = close_paper_position(
+                    trade_row["entry_price"], features.mid_price, close_size, trade_row["side"],
+                    spread_pct=features.spread_pct,
+                )
+                partial_frac_of_original = close_size / trade_row["size"] if trade_row["size"] else 0.0
+                self.db.record_partial_close(trade_row["id"], new_remaining, partial_frac_of_original,
+                                              action.pnl_pct, partial_pnl, action.new_stop_loss)
+                self.db.apply_partial_pnl(agent.id, partial_pnl)
+                log.info("Agent %d took partial profit (%.0f%% of position, pnl=%.2f) - %s",
+                          agent.id, action.close_fraction * 100, partial_pnl, action.reason)
+                continue
+
+            # action.kind == "close"
+            result, reason = action.result, action.reason
             # Approximates total funding paid/received over the hold as the
             # average of the entry-time and exit-time funding rate * notional
             # * hours held - live trading only ever observes the CURRENT rate
@@ -88,18 +148,48 @@ class Orchestrator:
             funding_cost = trade_row["notional"] * avg_funding_rate * hours_held
             if trade_row["side"] == "short":
                 funding_cost = -funding_cost
-            exit_price, pnl = close_paper_position(
-                trade_row["entry_price"], features.mid_price, trade_row["size"], trade_row["side"],
+            exit_price, leg_pnl = close_paper_position(
+                trade_row["entry_price"], features.mid_price, remaining_size, trade_row["side"],
                 spread_pct=features.spread_pct, funding_cost=funding_cost,
             )
-            self.db.close_trade(trade_row["id"], exit_price, pnl, result, reason)
+            # trades.pnl records the TOTAL trade economics (any earlier
+            # partial + this final leg) for accurate history, but the
+            # partial's dollar pnl was already credited to the agent's
+            # balance/total_pnl at partial-close time (apply_partial_pnl) -
+            # only leg_pnl (the incremental amount) goes to
+            # population.handle_win/handle_loss below, so it isn't double-
+            # counted.
+            partial_realized_pnl = trade_row["partial_realized_pnl"] or 0.0
+            total_pnl = partial_realized_pnl + leg_pnl
+            self.db.close_trade(trade_row["id"], exit_price, total_pnl, result, reason)
 
             if result == "win":
-                self.population.handle_win(agent.id, pnl)
+                self.population.handle_win(agent.id, leg_pnl)
             else:
-                self.population.handle_loss(agent.id, pnl)
+                self.population.handle_loss(agent.id, leg_pnl)
+
+        if pending_exit_ollama:
+            tighten_decisions = ollama_advisor.consult_exit_batch(
+                [(genome, features, side) for _trade_id, side, _stop, _price, genome, features in pending_exit_ollama]
+            )
+            for (trade_id, side, current_stop, mid_price, _genome, _features), tighten in zip(
+                pending_exit_ollama, tighten_decisions
+            ):
+                if not tighten:
+                    continue
+                new_stop = _council_tighten_stop(side, current_stop, mid_price, self.config.exit_council_tighten_frac)
+                if new_stop is not None:
+                    self.db.update_trade_stop(trade_id, new_stop)
+                    log.info("Trade %d exit-council (ollama) tightened stop to %.4f", trade_id, new_stop)
 
     def _process_entries(self, snap: MarketSnapshot) -> None:
+        # Two passes: collect every still-ambiguous signal (after the free
+        # rule-based/council checks) across ALL active traders first, then
+        # resolve them with ONE batched Ollama call instead of one call per
+        # agent - see reasoning/ollama_advisor.py::consult_batch.
+        resolved: list[tuple] = []  # (agent, genome, features, signal)
+        pending_ollama: list[tuple] = []  # (agent, genome, features, signal)
+
         for agent in self.db.list_active_traders():
             if self.db.get_open_trade(agent.id) is not None:
                 continue
@@ -115,8 +205,19 @@ class Orchestrator:
                     self.config.council_quorum_pct, self.config.council_min_active_voters,
                 )
             if signal.ambiguous and self.config.ollama_enabled:
-                signal = ollama_advisor.consult(genome, features, signal)
+                pending_ollama.append((agent, genome, features, signal))
+                continue
 
+            resolved.append((agent, genome, features, signal))
+
+        if pending_ollama:
+            batch_results = ollama_advisor.consult_batch(
+                [(genome, features, signal) for _agent, genome, features, signal in pending_ollama]
+            )
+            for (agent, genome, features, _signal), resolved_signal in zip(pending_ollama, batch_results):
+                resolved.append((agent, genome, features, resolved_signal))
+
+        for agent, genome, features, signal in resolved:
             if signal.action == "hold":
                 continue
 
@@ -126,22 +227,29 @@ class Orchestrator:
             # at 30% of the genome's intended size so a weak-but-approved
             # signal isn't shrunk to near nothing.
             effective_size_pct = genome.position_size_pct * max(0.3, min(1.0, signal.confidence))
+            # simulate_fill_price is a pure function of (mid_price, side,
+            # is_entry, spread_pct) - computing it here to derive the exit
+            # levels/risk normalization BEFORE sizing, then calling
+            # open_paper_position normally below, reproduces the exact same
+            # fill_price deterministically rather than duplicating its
+            # notional/size math.
+            preview_fill = simulate_fill_price(features.mid_price, signal.action, is_entry=True,
+                                                spread_pct=features.spread_pct)
+            levels = compute_exit_levels(genome, signal.action, preview_fill, features.atr_pct)
+            actual_stop_pct = abs(preview_fill - levels.stop_loss) / preview_fill * 100.0 if preview_fill else genome.stop_loss_pct
+            effective_size_pct = risk_normalized_size_pct(effective_size_pct, genome.stop_loss_pct, actual_stop_pct)
+
             fill_price, size, notional = open_paper_position(
                 agent.balance, features.mid_price, signal.action, effective_size_pct,
                 spread_pct=features.spread_pct,
             )
-            if signal.action == "long":
-                stop_loss = fill_price * (1 - genome.stop_loss_pct / 100)
-                take_profit = fill_price * (1 + genome.take_profit_pct / 100)
-            else:
-                stop_loss = fill_price * (1 + genome.stop_loss_pct / 100)
-                take_profit = fill_price * (1 - genome.take_profit_pct / 100)
 
             self.db.open_trade(
                 agent.id, genome.coin, signal.action, fill_price, size, notional,
-                stop_loss, take_profit, entry_reason="; ".join(signal.reasons),
+                levels.stop_loss, levels.take_profit, entry_reason="; ".join(signal.reasons),
                 regime=classify_regime(features.trend_up, features.adx_value),
                 entry_funding=features.funding,
+                partial_target=levels.partial_target,
             )
             log.info("Agent %d opened %s %s @ %.4f (confidence=%.2f) - %s",
                       agent.id, signal.action.upper(), genome.coin, fill_price,
@@ -226,6 +334,8 @@ class Orchestrator:
         else:
             self._stale_price_count = 0
         self._last_seen_price = snap.mid_price
+        self.db.set_meta("live_stale_last_price", str(self._last_seen_price))
+        self.db.set_meta("live_stale_price_count", str(self._stale_price_count))
         if self._stale_price_count >= self.config.live_stale_price_cycles:
             self._trip_circuit_breaker(
                 f"price feed unchanged ({snap.mid_price}) for {self._stale_price_count} "
@@ -276,6 +386,37 @@ class Orchestrator:
                     )
                     return True
 
+        return False
+
+    def _check_paper_drawdown(self) -> bool:
+        """Returns True if new paper entries should be paused this cycle -
+        see config.py's paper_circuit_breaker_enabled comment for why this
+        exists alongside the live-only circuit breaker above. Tracks the
+        swarm-wide realized-pnl peak and pauses once the drawdown from it
+        passes paper_max_drawdown_usd, auto-resuming at half that
+        threshold (hysteresis, so it doesn't flap open/closed every
+        cycle right at the boundary)."""
+        if not self.config.paper_circuit_breaker_enabled:
+            return False
+
+        realized = self.db.realized_pnl_stats()["total_realized_pnl"]
+        peak_raw = self.db.get_meta("paper_peak_realized_pnl")
+        peak = max(float(peak_raw), realized) if peak_raw else max(0.0, realized)
+        self.db.set_meta("paper_peak_realized_pnl", str(peak))
+        drawdown_usd = peak - realized
+
+        paused = self.db.get_meta("paper_breaker_paused") == "1"
+        if not paused and drawdown_usd >= self.config.paper_max_drawdown_usd:
+            self.db.set_meta("paper_breaker_paused", "1")
+            log.warning("Paper-population drawdown $%.2f past threshold ($%.2f) - pausing new "
+                        "paper entries until it recovers", drawdown_usd, self.config.paper_max_drawdown_usd)
+            return True
+        if paused:
+            if drawdown_usd <= self.config.paper_max_drawdown_usd / 2.0:
+                self.db.set_meta("paper_breaker_paused", "0")
+                log.info("Paper-population drawdown recovered to $%.2f - resuming new paper entries", drawdown_usd)
+                return False
+            return True
         return False
 
     def _sync_live_exposure(self, snap: MarketSnapshot) -> None:
@@ -337,7 +478,16 @@ class Orchestrator:
             snap = self.hl.get_snapshot(self.config.token, self.config.timeframe,
                                          candle_lookback_hours=self.config.backtest_lookback_hours)
             funding = self.hl.get_funding_history(self.config.token, self.config.backtest_lookback_hours)
-            self.population.set_backtest_window(snap.candles, funding)
+            # Best-effort: keeps the previous HTF series (rather than
+            # dropping to neutral) if this particular fetch fails, since
+            # it's a nice-to-have refresh, not the primary window.
+            htf_candles = self.population.htf_candles
+            try:
+                htf_candles = self.hl.get_candles(self.config.token, self.config.higher_timeframe,
+                                                   self.config.backtest_lookback_hours)
+            except Exception:
+                log.warning("Failed to refresh higher-timeframe backtest data - keeping the previous HTF series")
+            self.population.set_backtest_window(snap.candles, funding, htf_candles)
             log.info("Refreshed recent-window backtest data: %d candles, %d funding points",
                       len(snap.candles), len(funding))
         except Exception:
@@ -366,7 +516,8 @@ class Orchestrator:
         self._process_exits(snap)
         self.population.refill_if_below_floor()
         stats = self.population.rank_and_enforce()
-        self._process_entries(snap)
+        if not self._check_paper_drawdown():
+            self._process_entries(snap)
         if not self._check_circuit_breaker(snap):
             self._sync_live_exposure(snap)
 

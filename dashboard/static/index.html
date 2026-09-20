@@ -1095,7 +1095,7 @@ footer {
       <table id="trades-table">
         <thead><tr>
           <th>Agent</th><th>Side</th><th>Entry</th><th>Exit</th><th>PnL</th>
-          <th>Result</th><th>Regime</th><th>Reason</th><th>Opened</th>
+          <th>Result</th><th title="% of the trade's original size already sold (fully closed, or via partial take-profit), and the rest still pending/open">Closed</th><th>Regime</th><th>Reason</th><th>Opened</th>
           <th>Amount</th><th title="% of the agent's own balance risked as notional per trade (paper trading - no real borrowing)">Leverage</th>
         </tr></thead>
         <tbody></tbody>
@@ -1830,6 +1830,15 @@ async function refresh() {
         pnlCell = '-';
         statusCell = `<span class="pill result-open">${t.result}</span>`;
       }
+      // % of the trade's ORIGINAL size already sold: fully closed (win/loss)
+      // is always 100%; still open is either the partial-take-profit
+      // fraction already banked, or 0% if no partial has fired yet.
+      const closedPct = t.result !== 'open' ? 100 : (t.partial_taken ? t.partial_frac_taken * 100 : 0);
+      const closedCell = closedPct >= 100
+        ? `<span class="pill result-win">100% closed</span>`
+        : closedPct > 0
+          ? `<span class="pill result-open">${fmt(closedPct, 0)}% closed &middot; ${fmt(100 - closedPct, 0)}% open</span>`
+          : `<span class="pill result-open">pending</span>`;
       return `
       <tr>
         <td>#${t.agent_id}</td>
@@ -1838,13 +1847,14 @@ async function refresh() {
         <td>${t.exit_price ? fmt(t.exit_price, 4) : '-'}</td>
         <td>${pnlCell}</td>
         <td>${statusCell}</td>
+        <td>${closedCell}</td>
         <td><span class="pill regime-${t.regime || 'unknown'}">${t.regime || '-'}</span></td>
         <td title="${t.entry_reason||''}">${(t.exit_reason || t.entry_reason || '').slice(0,40)}</td>
         <td>${ago(t.opened_at)}</td>
         <td>$${fmt(t.notional)}</td>
         <td>${t.agent_genome_json ? fmt(agentLeveragePct(t.agent_genome_json), 1) + '%' : '-'}</td>
       </tr>`;
-    }).join('') : '<tr><td colspan="11" class="empty">No trades yet</td></tr>';
+    }).join('') : '<tr><td colspan="12" class="empty">No trades yet</td></tr>';
 
     const loadMoreBtn = document.getElementById('trades-load-more');
     const endMsg = document.getElementById('trades-end');

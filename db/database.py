@@ -110,6 +110,23 @@ class Database:
             # hold already elapsed - not retroactively knowable.
             self.conn.execute("ALTER TABLE trades ADD COLUMN entry_funding REAL DEFAULT 0.0")
             self.conn.commit()
+        if "remaining_size" not in existing_cols:
+            # ATR-adaptive/trailing/partial exit bookkeeping - see
+            # strategy/signals.py::evaluate_position and schema.sql. An
+            # existing OPEN trade predating this column has remaining_size
+            # backfilled to its full original size (no partial could have
+            # happened before this feature existed); a closed trade's
+            # remaining_size is irrelevant and left NULL.
+            self.conn.execute("ALTER TABLE trades ADD COLUMN remaining_size REAL")
+            self.conn.execute("ALTER TABLE trades ADD COLUMN partial_target REAL")
+            self.conn.execute("ALTER TABLE trades ADD COLUMN partial_taken INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("ALTER TABLE trades ADD COLUMN partial_frac_taken REAL NOT NULL DEFAULT 0.0")
+            self.conn.execute("ALTER TABLE trades ADD COLUMN partial_pnl_pct REAL NOT NULL DEFAULT 0.0")
+            self.conn.execute("ALTER TABLE trades ADD COLUMN partial_realized_pnl REAL NOT NULL DEFAULT 0.0")
+            self.conn.execute(
+                "UPDATE trades SET remaining_size = size WHERE result = 'open' AND remaining_size IS NULL"
+            )
+            self.conn.commit()
 
         agent_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(agents)")}
         if "revalidation_score" not in agent_cols:
@@ -316,14 +333,15 @@ class Database:
         entry_reason: str,
         regime: str | None = None,
         entry_funding: float = 0.0,
+        partial_target: float | None = None,
     ) -> int:
         cur = self.conn.execute(
             """INSERT INTO trades
                (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
-                entry_reason, regime, entry_funding, opened_at, result)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                entry_reason, regime, entry_funding, remaining_size, partial_target, opened_at, result)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
             (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
-             entry_reason, regime, entry_funding, now_iso()),
+             entry_reason, regime, entry_funding, size, partial_target, now_iso()),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -334,10 +352,52 @@ class Database:
         ).fetchone()
 
     def close_trade(self, trade_id: int, exit_price: float, pnl: float, result: str, exit_reason: str) -> None:
+        """`pnl` is the TOTAL trade pnl (any partial-close pnl already
+        applied via apply_partial_pnl, plus this final leg) - see
+        engine/orchestrator.py::_process_exits and
+        backtest/engine.py::backtest_genome for why the two must be summed
+        here rather than double-applying the partial portion."""
         self.conn.execute(
             """UPDATE trades SET exit_price = ?, pnl = ?, result = ?, exit_reason = ?, closed_at = ?
                WHERE id = ?""",
             (exit_price, pnl, result, exit_reason, now_iso(), trade_id),
+        )
+        self.conn.commit()
+
+    def update_trade_stop(self, trade_id: int, new_stop_loss: float) -> None:
+        """Trailing-stop tightening - see strategy/signals.py::evaluate_position."""
+        self.conn.execute("UPDATE trades SET stop_loss = ? WHERE id = ?", (new_stop_loss, trade_id))
+        self.conn.commit()
+
+    def record_partial_close(self, trade_id: int, remaining_size: float, partial_frac_taken: float,
+                              partial_pnl_pct: float, partial_realized_pnl: float, new_stop_loss: float) -> None:
+        """Persists a partial take-profit: shrinks remaining_size, records
+        the fraction/pnl_pct needed to blend the final result label (see
+        strategy/signals.py::_blended_result), moves the stop to breakeven,
+        and marks partial_taken so it can't fire twice. partial_realized_pnl
+        (the $ amount, already credited to the agent via apply_partial_pnl)
+        is stored here purely so the final close can fold it into
+        trades.pnl for accurate trade-history reporting - it is NOT
+        re-applied to the agent's balance at that point."""
+        self.conn.execute(
+            """UPDATE trades
+               SET remaining_size = ?, partial_taken = 1, partial_frac_taken = ?,
+                   partial_pnl_pct = ?, partial_realized_pnl = partial_realized_pnl + ?, stop_loss = ?
+               WHERE id = ?""",
+            (remaining_size, partial_frac_taken, partial_pnl_pct, partial_realized_pnl, new_stop_loss, trade_id),
+        )
+        self.conn.commit()
+
+    def apply_partial_pnl(self, agent_id: int, pnl: float) -> None:
+        """Immediately credits a partial take-profit's realized $ pnl to
+        the agent's balance AND total_pnl (a real economic event - it
+        should count in both right away, the same as a full close would).
+        Does NOT touch wins/losses/trades_count/win_streak - those are
+        still driven solely by the trade's eventual final-close result,
+        same do-or-die mechanic as before this existed."""
+        self.conn.execute(
+            "UPDATE agents SET balance = balance + ?, total_pnl = total_pnl + ? WHERE id = ?",
+            (pnl, pnl, agent_id),
         )
         self.conn.commit()
 

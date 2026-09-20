@@ -80,6 +80,26 @@ class Config:
     # disables; failure to reach it is logged, never blocks the trip itself.
     live_breaker_webhook_url: str = os.getenv("LIVE_BREAKER_WEBHOOK_URL", "")
 
+    # --- paper-trading circuit breaker: the live one above only ever
+    # protects the real aggregate position - the paper population (which
+    # drives EVERY evolutionary decision: what genome an agent is born
+    # with, who wins do-or-die, who gets promoted) previously had no
+    # systemic guard at all. Do-or-die already bounds a single agent's own
+    # risk, but nothing caught a correlated, swarm-wide bleed (e.g. a
+    # broken feature or a regime nothing in the population handles well).
+    # Tracks the swarm-wide REALIZED pnl curve (same number the dashboard
+    # already shows - see db.realized_pnl_stats/population_cycles.
+    # total_realized_pnl) rather than summed alive-agent balances, since
+    # that sum is dominated by population-size churn (spawns/deaths) and
+    # isn't a stable equity curve. Pauses NEW paper entries only - existing
+    # open positions still exit normally - and auto-resumes once the
+    # drawdown recovers to half the threshold (no manual clear needed,
+    # unlike the live breaker: there's no real money at stake, so the cost
+    # of being overly cautious here is a few paused training cycles, not
+    # lost capital). See engine/orchestrator.py::_check_paper_drawdown.
+    paper_circuit_breaker_enabled: bool = _bool("PAPER_CIRCUIT_BREAKER_ENABLED", True)
+    paper_max_drawdown_usd: float = float(os.getenv("PAPER_MAX_DRAWDOWN_USD", "5000.0"))
+
     # --- population / evolution ---
     population_cap: int = int(os.getenv("POPULATION_CAP", "500"))
     active_trader_count: int = int(os.getenv("ACTIVE_TRADER_COUNT", "50"))
@@ -216,6 +236,21 @@ class Config:
     # Below this many active (long/short) votes, the poll is too thin to mean
     # anything - falls through to Ollama/hold instead of a shaky "majority of 2".
     council_min_active_voters: int = int(os.getenv("COUNCIL_MIN_ACTIVE_VOTERS", "3"))
+
+    # --- Exit council: optional, tighten-only advisory layer on top of the
+    # deterministic ATR-adaptive stop/trailing system above. When enabled, an
+    # OPEN position with nothing else to do this cycle (no partial/trail/close
+    # fired) gets an extra check: does the same council ensemble (and, if
+    # inconclusive, Ollama) now favor the OPPOSITE side? If so, pull the stop
+    # tighter - never loosen it, never force a close. Off by default; never
+    # invoked from the backtester, since a live council/LLM opinion can't be
+    # replayed historically (see engine/orchestrator.py::_process_exits and
+    # strategy/signals.py::council_oppose_position).
+    exit_council_enabled: bool = _bool("EXIT_COUNCIL_ENABLED", False)
+    # How far from the current stop toward the current price to pull it when
+    # the council opposes the held position - 0 is a no-op, 1 pulls the stop
+    # all the way to current price.
+    exit_council_tighten_frac: float = float(os.getenv("EXIT_COUNCIL_TIGHTEN_FRAC", "0.5"))
 
     # --- Ollama reasoning fallback (cloud API by default - no local model needed) ---
     ollama_enabled: bool = _bool("OLLAMA_ENABLED", True)

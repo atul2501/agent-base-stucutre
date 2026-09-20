@@ -114,6 +114,25 @@ class TestPersistsAcrossRestart:
         fresh_orch = _orchestrator(db, live=FakeLive(equity=500.0), live_max_drawdown_pct=20.0)
         assert fresh_orch._check_circuit_breaker(_snapshot()) is True
 
+    def test_stale_price_count_survives_a_restart(self, db):
+        # The staleness counter used to be in-memory only, so a restart
+        # right after a feed freeze handed back a few free cycles before
+        # re-tripping - it must now be persisted the same way the trip
+        # flag already was.
+        live = FakeLive(equity=1000.0)
+        orch = _orchestrator(db, live=live, live_stale_price_cycles=3, live_max_drawdown_pct=99.0)
+        orch._check_circuit_breaker(_snapshot(mid_price=50.0))  # count=0
+        orch._check_circuit_breaker(_snapshot(mid_price=50.0))  # count=1
+
+        # Simulates a process restart: brand-new Orchestrator, same DB.
+        fresh_orch = _orchestrator(db, live=FakeLive(equity=1000.0),
+                                    live_stale_price_cycles=3, live_max_drawdown_pct=99.0)
+        assert fresh_orch._stale_price_count == 1
+        tripped = fresh_orch._check_circuit_breaker(_snapshot(mid_price=50.0))  # count=2
+        assert tripped is False
+        tripped = fresh_orch._check_circuit_breaker(_snapshot(mid_price=50.0))  # count=3 -> trips
+        assert tripped is True
+
     def test_clearing_meta_un_trips_it(self, db):
         live = FakeLive(equity=1000.0)
         orch = _orchestrator(db, live=live, live_max_drawdown_pct=20.0)

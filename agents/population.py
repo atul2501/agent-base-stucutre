@@ -115,7 +115,8 @@ class Population:
     def __init__(self, db: Database, config: Config, rng: random.Random | None = None,
                  backtest_candles: list[dict] | None = None,
                  backtest_funding: list[tuple[int, float, float]] | None = None,
-                 regime_windows: list[tuple[list[dict], list[tuple[int, float, float]]]] | None = None):
+                 regime_windows: list[tuple[list[dict], list[tuple[int, float, float]]]] | None = None,
+                 htf_candles: list[dict] | None = None):
         self.db = db
         self.config = config
         self.rng = rng or random.Random()
@@ -126,21 +127,26 @@ class Population:
         # omitted falls back to today's single-window-only behavior (e.g.
         # the extra fetch failed, or in tests).
         self.regime_windows = regime_windows or []
-        self.set_backtest_window(backtest_candles, backtest_funding)
+        self.set_backtest_window(backtest_candles, backtest_funding, htf_candles)
         # Counts calls to rank_and_enforce (~1 per trading cycle) - used to
         # pace forced active-trader rotation without coupling Population to
         # the orchestrator's own cycle counter.
         self._rank_enforce_calls = 0
 
     def set_backtest_window(self, candles: list[dict] | None,
-                             funding: list[tuple[int, float, float]] | None) -> None:
+                             funding: list[tuple[int, float, float]] | None,
+                             htf_candles: list[dict] | None = None) -> None:
         """Sets the recent-window backtest data AND recomputes the train/
         validation split used by _pick_best - the single place this should
         happen, so orchestrator's periodic refresh (see
         engine/orchestrator.py::_refresh_backtest_window) can't update one
-        without the other going stale."""
+        without the other going stale. `htf_candles` (optional -
+        higher-timeframe candles covering the same window) lets
+        backtest_genome backtest the HTF trend filter for real instead of
+        treating it as neutral - see backtest/engine.py's module docstring."""
         self.backtest_candles = candles
         self.backtest_funding = funding or []
+        self.htf_candles = htf_candles
         (self.train_candles, self.train_funding,
          self.validation_candles, self.validation_funding) = _split_train_validation(
             self.backtest_candles or [], self.backtest_funding,
@@ -169,7 +175,8 @@ class Population:
         best_genome, best_score = candidates[0], None
         for genome in candidates:
             result = backtest_genome(genome, score_candles, score_funding,
-                                      starting_balance=self.config.starting_paper_balance)
+                                      starting_balance=self.config.starting_paper_balance,
+                                      htf_candles=self.htf_candles)
             score = fitness_score(result) + self._regime_consistency_score(genome)
             if alive_genomes:
                 nearest = min(genome_distance(genome, other) for other in alive_genomes)
@@ -310,7 +317,8 @@ class Population:
         for agent in top:
             genome = Genome.from_dict(agent.genome)
             result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
-                                      starting_balance=self.config.starting_paper_balance)
+                                      starting_balance=self.config.starting_paper_balance,
+                                      htf_candles=self.htf_candles)
             score = fitness_score(result)
             self.db.set_revalidation(agent.id, score)
         return len(top)

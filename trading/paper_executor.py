@@ -25,6 +25,24 @@ def simulate_fill_price(mid_price: float, side: str, is_entry: bool, spread_pct:
     return mid_price - slip
 
 
+def risk_normalized_size_pct(position_size_pct: float, baseline_stop_pct: float, actual_stop_pct: float) -> float:
+    """Shrinks `position_size_pct` when the ACTUAL stop distance used for
+    this trade (e.g. an ATR-widened stop in a volatile market - see
+    strategy/signals.py::compute_exit_levels) is wider than the genome's
+    own baseline `stop_loss_pct`, so dollar risk-at-stop stays anchored to
+    what the genome's evolved baseline implies instead of silently
+    ballooning whenever volatility widens the actual stop.
+
+    Deliberately one-directional: never sizes UP when the actual stop is
+    TIGHTER than baseline. `position_size_pct` (bounded 2-25% of balance,
+    see strategy/genome.py BOUNDS) was already a deliberately conservative
+    ceiling; this only ever reduces risk relative to that ceiling; it never
+    introduces new leverage/risk the existing bounds didn't already allow."""
+    if baseline_stop_pct <= 0 or actual_stop_pct <= baseline_stop_pct:
+        return position_size_pct
+    return position_size_pct * (baseline_stop_pct / actual_stop_pct)
+
+
 def open_paper_position(balance: float, mid_price: float, side: str, position_size_pct: float,
                          spread_pct: float = 0.0) -> tuple[float, float, float]:
     """Returns (fill_price, size, notional)."""

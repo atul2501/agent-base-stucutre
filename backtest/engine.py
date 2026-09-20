@@ -8,21 +8,23 @@ BORN with - see agents/population.py. The live do-or-die mechanic itself
 is completely unchanged: a backtested-good agent still has to win its
 first real trade to survive, same as before.
 
-Reuses strategy/signals.py's evaluate_entry/evaluate_exit UNCHANGED (not a
-reimplementation) so live and backtested scoring can never drift into two
+Reuses strategy/signals.py's evaluate_entry/evaluate_position UNCHANGED (not
+a reimplementation) so live and backtested scoring can never drift into two
 different definitions of "confirms" - see build_backtest_features below,
 which is the backtest's equivalent of strategy/signals.py::build_features.
 
-Honesty note: Hyperliquid's public API has no historical series for order
-book depth or open interest (point-in-time snapshots only), so those two
-confirmations are neutral during backtesting (ob_imbalance=1.0,
-oi_change_pct=None - evaluate_entry already treats both as "no signal").
-Funding AND mark/oracle premium DO have real historical series
-(Info.funding_history includes both), so those use real historical data.
-The higher-timeframe trend filter is also neutral here (htf_trend_up=None)
-- it's live-only for now; backtesting it properly would need a second
-historical candle series time-aligned per bar without introducing
-lookahead bias, which wasn't worth rushing.
+Honesty note on backtest/live feature parity: Hyperliquid's public API has
+no historical series for order book depth or open interest (point-in-time
+snapshots only), so those two confirmations are unavoidably neutral during
+backtesting (ob_imbalance=1.0, oi_change_pct=None - evaluate_entry already
+treats both as "no signal"). Funding AND mark/oracle premium DO have real
+historical series (Info.funding_history includes both), so those use real
+historical data. The higher-timeframe trend filter, unlike order book/OI,
+only ever needs PRICE data (which is available historically) - when the
+caller supplies `htf_candles` to backtest_genome, it's backtested for real
+via _htf_trend_at (time-aligned per bar, no lookahead - only ever reads a
+higher-timeframe candle that had FULLY closed as of that bar); omitted, it
+falls back to the previous neutral treatment.
 """
 from __future__ import annotations
 
@@ -32,8 +34,12 @@ from datetime import datetime, timezone
 
 from strategy.genome import Genome
 from strategy.indicators import adx, atr, bollinger_percent_b, ema, macd_histogram, rsi, stochastic_rsi, vwap
-from strategy.signals import Features, evaluate_entry, evaluate_exit
-from trading.paper_executor import close_paper_position, open_paper_position
+from strategy.signals import (
+    _HTF_EMA_FAST, _HTF_EMA_SLOW, Features, compute_exit_levels, evaluate_entry, evaluate_position,
+)
+from trading.paper_executor import (
+    close_paper_position, open_paper_position, risk_normalized_size_pct, simulate_fill_price,
+)
 
 # ~24h of lookback for the "24h momentum" feature, expressed in candles -
 # computed from the timeframe at call time rather than hardcoded to 5m.
@@ -100,7 +106,58 @@ def _precompute(genome: Genome, candles: list[dict], funding_points: list[tuple[
     )
 
 
-def build_backtest_features(genome: Genome, series: _Series, i: int, ts_ms: int) -> Features:
+@dataclass
+class _HtfSeries:
+    timestamps: list
+    ema_fast: object
+    ema_slow: object
+    candle_ms: int
+
+
+def _precompute_htf(htf_candles: list[dict] | None) -> "_HtfSeries | None":
+    """Precomputes the higher-timeframe EMA(20,50) trend series ONCE over
+    the whole htf_candles list (same fixed periods as
+    strategy/signals.py::compute_htf_trend - a shared macro context, not
+    genome-tunable) so per-bar lookups below are just an index, not a
+    recomputation. Returns None if there isn't enough HTF history to ever
+    produce a trend read, matching compute_htf_trend's own minimum.
+
+    This closes part of the backtest/live feature-parity gap: order book
+    imbalance and open interest genuinely have no historical series
+    available from Hyperliquid's public API (point-in-time snapshots only -
+    see build_backtest_features), so those stay neutral in backtest. The
+    higher-timeframe trend filter, unlike those two, only ever needs price
+    data, which IS available historically - so it can be (and now is)
+    backtested for real instead of staying neutral."""
+    if not htf_candles or len(htf_candles) < _HTF_EMA_SLOW + 2:
+        return None
+    closes = [c["c"] for c in htf_candles]
+    timestamps = [c["t"] for c in htf_candles]
+    if len(timestamps) > 1 and timestamps[1] > timestamps[0]:
+        candle_ms = timestamps[1] - timestamps[0]
+    else:
+        candle_ms = 60 * 60 * 1000  # 1h fallback, matches the default HIGHER_TIMEFRAME
+    return _HtfSeries(timestamps=timestamps, ema_fast=ema(closes, _HTF_EMA_FAST),
+                       ema_slow=ema(closes, _HTF_EMA_SLOW), candle_ms=candle_ms)
+
+
+def _htf_trend_at(htf: "_HtfSeries | None", ts_ms: int) -> bool | None:
+    """Trend read from the LAST FULLY-CLOSED higher-timeframe candle as of
+    ts_ms - deliberately requires ts_ms >= that candle's own close time
+    (open time + candle_ms), not just its open time, so this can never see
+    a candle that hadn't finished forming yet at ts_ms (no lookahead bias).
+    Returns None (neutral, same as the live "unknown" case) if there isn't
+    enough closed HTF history yet at this point in the backtest."""
+    if htf is None:
+        return None
+    idx = bisect.bisect_right(htf.timestamps, ts_ms - htf.candle_ms) - 1
+    if idx < _HTF_EMA_SLOW + 1:
+        return None
+    return bool(htf.ema_fast[idx] > htf.ema_slow[idx])
+
+
+def build_backtest_features(genome: Genome, series: _Series, i: int, ts_ms: int,
+                             htf: "_HtfSeries | None" = None) -> Features:
     """The backtest's equivalent of strategy/signals.py::build_features -
     same indicator math, computed from a precomputed series instead of a
     live snapshot. Exposed (not just inlined in the loop) so it can be
@@ -135,10 +192,12 @@ def build_backtest_features(genome: Genome, series: _Series, i: int, ts_ms: int)
         volume_ratio=volume_ratio, vwap_deviation_pct=vwap_deviation_pct,
         macd_hist=float(series.macd[i]), daily_change_pct=daily_change_pct,
         bb_percent_b=float(series.bb[i]), stoch_rsi_k=float(series.stoch[i]),
-        # Higher-timeframe trend isn't backtested (would need a second
-        # historical series properly time-aligned per bar without
-        # lookahead bias) - neutral here, same treatment as order book/OI.
-        htf_trend_up=None,
+        # Real (not neutral) whenever HTF candle history is supplied - see
+        # _htf_trend_at. Order book imbalance and open interest above stay
+        # neutral regardless: Hyperliquid's public API has no historical
+        # series for either (point-in-time snapshots only), unlike price
+        # data, which is all the HTF trend needs.
+        htf_trend_up=_htf_trend_at(htf, ts_ms),
     )
 
 
@@ -147,10 +206,16 @@ def backtest_genome(
     candles: list[dict],
     funding_points: list[tuple[int, float, float]],
     starting_balance: float = 1000.0,
+    htf_candles: list[dict] | None = None,
 ) -> BacktestResult:
     """`candles`: oldest->newest dicts with t,o,h,l,c,v (same shape as
     MarketSnapshot.candles). `funding_points`: (timestamp_ms, funding,
-    premium) tuples, oldest->newest, e.g. from Info.funding_history."""
+    premium) tuples, oldest->newest, e.g. from Info.funding_history.
+    `htf_candles`: optional higher-timeframe candles (same shape,
+    config.higher_timeframe) covering at least the same date range - when
+    supplied, the higher-timeframe trend filter is backtested for real
+    instead of staying neutral (see _htf_trend_at); omitted or too short,
+    behavior is unchanged from before this existed."""
     n = len(candles)
     min_required = _min_required_candles(genome)
     if n < min_required + 10:
@@ -158,6 +223,7 @@ def backtest_genome(
 
     series = _precompute(genome, candles, funding_points)
     timestamps = [c["t"] for c in candles]
+    htf = _precompute_htf(htf_candles)
 
     balance = starting_balance
     peak_balance = starting_balance
@@ -169,19 +235,31 @@ def backtest_genome(
         price = series.closes[i]
         ts_ms = timestamps[i]
         now = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
-        f = build_backtest_features(genome, series, i, ts_ms)
+        f = build_backtest_features(genome, series, i, ts_ms, htf=htf)
 
         if position is None:
             sig = evaluate_entry(genome, f)
             if sig.action in ("long", "short"):
-                fill_price, size, _notional = open_paper_position(balance, price, sig.action, genome.position_size_pct)
+                preview_fill = simulate_fill_price(price, sig.action, is_entry=True)
+                levels = compute_exit_levels(genome, sig.action, preview_fill, f.atr_pct)
+                actual_stop_pct = abs(preview_fill - levels.stop_loss) / preview_fill * 100.0 if preview_fill else genome.stop_loss_pct
+                size_pct = risk_normalized_size_pct(genome.position_size_pct, genome.stop_loss_pct, actual_stop_pct)
+                fill_price, size, _notional = open_paper_position(balance, price, sig.action, size_pct)
                 # Index into funding_points as of entry - only funding events
                 # AFTER this one accrue against the position (see below).
                 last_funding_idx = (max(0, bisect.bisect_right(series.funding_times, ts_ms) - 1)
                                      if series.funding_points else -1)
                 position = {"side": sig.action, "entry_price": fill_price, "size": size,
                             "opened_at": now.isoformat(), "last_funding_idx": last_funding_idx,
-                            "funding_accrued": 0.0}
+                            "funding_accrued": 0.0,
+                            # Mirrors the live trade row's ATR-adaptive/trailing/
+                            # partial exit fields (see strategy/signals.py::
+                            # evaluate_position and engine/orchestrator.py) so
+                            # backtest and live exit behavior can never drift -
+                            # same evaluate_position() call, same field shape.
+                            "stop_loss": levels.stop_loss, "take_profit": levels.take_profit,
+                            "partial_target": levels.partial_target, "remaining_size": size,
+                            "partial_taken": 0, "partial_frac_taken": 0.0, "partial_pnl_pct": 0.0}
         else:
             # Funding accrual: a real historical funding series exists here
             # (unlike live, which only ever sees the current rate), so this
@@ -196,14 +274,44 @@ def backtest_genome(
                     rate = series.funding_points[position["last_funding_idx"]][1]
                     cost = position["size"] * price * rate
                     position["funding_accrued"] += cost if position["side"] == "long" else -cost
-            outcome = evaluate_exit(genome, position, f, now=now)
-            if outcome is not None:
-                result, _reason = outcome
-                _exit_price, pnl = close_paper_position(
-                    position["entry_price"], price, position["size"], position["side"],
+
+            action = evaluate_position(genome, position, f, now=now)
+
+            # Deliberately no exit-council/Ollama tighten-only advisory layer
+            # here (see engine/orchestrator.py::_process_exits and
+            # strategy/signals.py::council_oppose_position) - same reason
+            # council/Ollama are never consulted for entries during
+            # backtesting either: a live council/LLM opinion can't be
+            # replayed historically, so keeping this simulator on the purely
+            # deterministic evaluate_position() path is what lets backtested
+            # and live exit behavior never drift apart.
+            if action.kind == "trail":
+                position["stop_loss"] = action.new_stop_loss
+
+            elif action.kind == "partial":
+                remaining = position["remaining_size"]
+                close_size = remaining * action.close_fraction
+                _exit_price, partial_pnl = close_paper_position(
+                    position["entry_price"], price, close_size, position["side"],
+                )
+                balance += partial_pnl
+                peak_balance = max(peak_balance, balance)
+                if peak_balance > 0:
+                    max_drawdown_pct = max(max_drawdown_pct, (peak_balance - balance) / peak_balance * 100.0)
+                position["remaining_size"] = remaining - close_size
+                position["partial_taken"] = 1
+                position["partial_frac_taken"] = close_size / position["size"] if position["size"] else 0.0
+                position["partial_pnl_pct"] = action.pnl_pct
+                position["stop_loss"] = action.new_stop_loss
+
+            elif action.kind == "close":
+                result = action.result
+                remaining = position["remaining_size"]
+                _exit_price, leg_pnl = close_paper_position(
+                    position["entry_price"], price, remaining, position["side"],
                     funding_cost=position["funding_accrued"],
                 )
-                balance += pnl
+                balance += leg_pnl
                 peak_balance = max(peak_balance, balance)
                 if peak_balance > 0:
                     max_drawdown_pct = max(max_drawdown_pct, (peak_balance - balance) / peak_balance * 100.0)
@@ -244,11 +352,23 @@ def fitness_score(result: BacktestResult) -> float:
 
     Risk-adjusted: penalizes max_drawdown_pct so a volatile/streaky genome
     doesn't outrank a steadier one purely on total return, and shrinks
-    win_rate toward 50% for small trade counts so a couple of lucky wins
-    can't masquerade as a proven high win rate."""
+    BOTH win_rate and return_pct toward a neutral baseline (50% / 0%) for
+    small trade counts, so a couple of lucky wins or one lucky big move
+    can't masquerade as a proven track record. return_pct used to be the
+    one unshrunk term here - a 2-trade genome that got lucky on a single
+    big move could still dominate _pick_best over a proven 20-trade genome
+    with a smaller but consistent return, since only win_rate was
+    discounted for sample size."""
     if result.trades == 0:
         return -1.0
     shrunk_win_rate = (result.wins + _WIN_RATE_PRIOR_WINS) / (result.trades + _WIN_RATE_PRIOR_TRADES)
-    return (result.return_pct
+    # Same shrink-toward-neutral technique as win_rate above (blend in
+    # _WIN_RATE_PRIOR_TRADES virtual trades, each contributing 0% return)
+    # applied to return_pct instead of a rate, since return_pct is already
+    # a total (not per-trade) figure: shrunk_return / trades =
+    # return_pct / (trades + prior_trades), i.e. the same shrunk PER-TRADE
+    # return scaled back up by the real trade count.
+    shrunk_return_pct = result.return_pct * result.trades / (result.trades + _WIN_RATE_PRIOR_TRADES)
+    return (shrunk_return_pct
             + shrunk_win_rate * 10.0
             - result.max_drawdown_pct * _DRAWDOWN_PENALTY_WEIGHT)
