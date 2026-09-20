@@ -234,7 +234,7 @@ class TestProcessExitsSkipsAdvisoryLayerWhenSomethingElseFired:
     def test_disabled_by_default_leaves_stop_untouched(self, db, monkeypatch):
         orch = _orchestrator(db, exit_council_enabled=False)
         agent_id = db.create_agent({"coin": "SOL", "timeframe": "1m"}, balance=1000.0)
-        trade_id = db.open_trade(agent_id, "SOL", "long", 100.0, 1.0, 100.0, 95.0, 110.0, "test")
+        db.open_trade(agent_id, "SOL", "long", 100.0, 1.0, 100.0, 95.0, 110.0, "test")
 
         called = {"count": 0}
 

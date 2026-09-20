@@ -464,7 +464,27 @@ class Orchestrator:
             else:
                 log.error("LIVE order FAILED: %s %s %s - %s", r["action"], r["side"], self.config.token, r["detail"])
 
-        self.db.set_live_position(self.config.token, desired_side, desired_size, desired_notional)
+        if any(r["status"] != "filled" for r in results):
+            # At least one order failed - the real position may not match
+            # desired_side/desired_size any more (e.g. a flip's close leg
+            # filled but its open leg didn't). Reconcile against the
+            # exchange's own ground truth instead of recording the target
+            # we merely attempted, so the dashboard/DB never claims a
+            # position was reached that a real order just failed to reach.
+            # get_actual_position (unlike get_account_equity) doesn't catch
+            # its own network errors, so this is wrapped here - a fetch
+            # failure right after an order failure must not turn into an
+            # uncaught exception that skips the rest of this cycle
+            # (record_population_cycle, prev_open_interest, etc below).
+            try:
+                actual_side, actual_size = self.live.get_actual_position(self.config.token)
+                actual_notional = actual_size * snap.mid_price if actual_side else 0.0
+                self.db.set_live_position(self.config.token, actual_side, actual_size, actual_notional)
+            except Exception:
+                log.exception("Failed to reconcile live position after an order failure - "
+                               "live_position table may be stale until the next successful sync")
+        else:
+            self.db.set_live_position(self.config.token, desired_side, desired_size, desired_notional)
 
     def _refresh_backtest_window(self) -> None:
         """The recent-window backtest data (used for new-agent screening AND

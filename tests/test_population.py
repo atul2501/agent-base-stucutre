@@ -112,6 +112,23 @@ class TestWinLossLifecycle:
         assert agent.death_reason == "losing trade"
         assert agent.total_pnl == pytest.approx(-10.0)
 
+    def test_strategy_share_only_recorded_on_win_streak_threshold(self, db, rng):
+        """Regression test: a batching refactor of handle_win once
+        accidentally de-indented record_strategy_share out of its
+        win_streak-threshold `if`, making it fire unconditionally on every
+        win instead of only every win_streak_share_threshold wins."""
+        cfg = Config(win_streak_share_threshold=3, backtest_enabled=False,
+                      crossover_probability=0.0, children_per_win=0)
+        pop = Population(db, cfg, rng=rng)
+        agent_id = _make_agent(db, rng)
+
+        pop.handle_win(agent_id, pnl=1.0)  # streak=1 - below threshold
+        assert db.sample_shared_genome() is None
+        pop.handle_win(agent_id, pnl=1.0)  # streak=2 - below threshold
+        assert db.sample_shared_genome() is None
+        pop.handle_win(agent_id, pnl=1.0)  # streak=3 - hits the threshold
+        assert db.sample_shared_genome() is not None
+
     def test_parent_promoted_once_both_children_have_won(self, db, rng):
         cfg = Config(children_per_win=2, backtest_enabled=False, crossover_probability=0.0)
         pop = Population(db, cfg, rng=rng)

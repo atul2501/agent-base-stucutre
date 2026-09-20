@@ -29,6 +29,18 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return {k: row[k] for k in row.keys()}
 
 
+def _limit_arg(default: int, cap: int = 2000) -> int:
+    """Parses the `?limit=` query param, falling back to `default` on
+    anything non-numeric (e.g. `?limit=abc`) instead of letting `int()`
+    raise and 500 the endpoint. Shared by /api/leaderboard and /api/trades,
+    which previously each inlined this same pattern unguarded."""
+    try:
+        value = int(request.args.get("limit", default))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, 1), cap)
+
+
 def create_app(config: Config) -> Flask:
     app = Flask(__name__, static_folder=None)
 
@@ -57,10 +69,19 @@ def create_app(config: Config) -> Flask:
         ).fetchone()
         breaker_row = conn.execute(
             "SELECT key, value FROM meta WHERE key IN "
-            "('live_breaker_tripped', 'live_breaker_reason', 'live_breaker_tripped_at', 'last_price')"
+            "('live_breaker_tripped', 'live_breaker_reason', 'live_breaker_tripped_at', 'last_price', "
+            "'live_executor_ready', 'live_executor_error')"
         ).fetchall()
         breaker_meta = {r["key"]: r["value"] for r in breaker_row}
         last_price = breaker_meta.get("last_price")
+        # Whether the real Hyperliquid order-placement client actually
+        # initialized this run (see main.py) - distinct from config.is_live(),
+        # which only reflects TRADING_MODE/HL_NETWORK config and stays True
+        # even if LiveExecutor construction failed and the run silently fell
+        # back to paper-only for real orders. Defaults to True when unset
+        # (e.g. paper mode, or an older DB from before this existed) so a
+        # merely-absent flag never falsely renders as "executor down".
+        live_executor_ready = breaker_meta.get("live_executor_ready") != "0"
         return jsonify({
             "token": config.token,
             "last_price": float(last_price) if last_price is not None else None,
@@ -69,6 +90,8 @@ def create_app(config: Config) -> Flask:
             "network": config.hl_network,
             "mode": "live" if config.is_live() else "paper",
             "is_live": config.is_live(),
+            "live_executor_ready": live_executor_ready,
+            "live_executor_error": breaker_meta.get("live_executor_error") or None,
             "population_cap": config.population_cap,
             "active_trader_count": config.active_trader_count,
             "live_active_trader_count": config.live_active_trader_count,
@@ -132,7 +155,7 @@ def create_app(config: Config) -> Flask:
         # available on every SQLite build (SQLITE_ENABLE_MATH_FUNCTIONS is
         # not universal) and would 500 the whole endpoint if missing.
         # Sharing one Python function removes both risks structurally.
-        limit = min(max(int(request.args.get("limit", 25)), 1), 2000)
+        limit = _limit_arg(25)
         rows = conn.execute(
             """SELECT id, parent_id, generation, tier, status, is_active_trader, is_live_trader,
                       balance, wins, losses, win_streak, total_pnl, trades_count, genome_json,
@@ -157,7 +180,7 @@ def create_app(config: Config) -> Flask:
         # every tick) without the loaded set shifting or duplicating as new
         # trades come in. Capped so a runaway query string can't force a
         # huge full-table scan.
-        limit = min(max(int(request.args.get("limit", 15)), 1), 2000)
+        limit = _limit_arg(15)
         conn = get_conn()
         # Joined against agents (not a client-side lookup of already-fetched
         # alive agents) because do-or-die means a LOSS trade's agent is
@@ -416,5 +439,11 @@ def create_app(config: Config) -> Flask:
 
 def run_dashboard(config: Config) -> None:
     app = create_app(config)
+    if config.dashboard_host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning(
+            "DASHBOARD_HOST=%s is not loopback-only - this API has NO authentication "
+            "and will be reachable by anyone who can route to this host.",
+            config.dashboard_host,
+        )
     log.info("Dashboard listening on http://%s:%d", config.dashboard_host, config.dashboard_port)
     app.run(host=config.dashboard_host, port=config.dashboard_port, debug=False, use_reloader=False, threaded=True)

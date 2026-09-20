@@ -1622,7 +1622,16 @@ async function refresh() {
 
     const badges = [];
     badges.push(`<span class="badge ${overview.network}">${overview.network.toUpperCase()}</span>`);
-    badges.push(`<span class="badge ${overview.mode}">${overview.mode === 'live' ? 'LIVE - REAL MONEY' : 'PAPER TRADING'}</span>`);
+    if (overview.mode === 'live' && overview.live_executor_ready === false) {
+      // config.is_live() (overview.mode) reflects TRADING_MODE/HL_NETWORK
+      // config, not whether the real order-placement client actually
+      // initialized - see main.py/dashboard/server.py. Without this branch,
+      // this would render as a plain green "LIVE - REAL MONEY" badge even
+      // though no real orders are being placed this run.
+      badges.push(`<span class="badge live" style="background:var(--amber-dim);color:var(--amber);" title="${overview.live_executor_error || 'Live executor failed to initialize'}">LIVE CONFIGURED - EXECUTOR DOWN, NO REAL ORDERS</span>`);
+    } else {
+      badges.push(`<span class="badge ${overview.mode}">${overview.mode === 'live' ? 'LIVE - REAL MONEY' : 'PAPER TRADING'}</span>`);
+    }
     badges.push(ollamaBadge(overview.ollama));
     badges.push(`<span class="badge">Cycle ${overview.last_cycle ? overview.last_cycle.cycle : 0} &middot; ${overview.last_cycle ? ago(overview.last_cycle.ran_at) : 'not started'}</span>`);
     if (!lastRefreshOk) {

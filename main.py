@@ -245,8 +245,20 @@ def main() -> None:
             try:
                 live_executor = LiveExecutor(CONFIG)
                 log.info("Live executor ready for wallet %s", live_executor.address)
-            except Exception:
+                db.set_meta("live_executor_ready", "1")
+                db.set_meta("live_executor_error", "")
+            except Exception as e:
                 log.exception("Failed to initialize live executor - falling back to paper for this run")
+                # TRADING_MODE=live is still configured (config.is_live()
+                # stays True everywhere else - DB is_live_trader flags, the
+                # dashboard's mode badge) even though no real orders will
+                # ever be placed this run. Without this flag, the dashboard
+                # would silently show "LIVE - REAL MONEY" while the system
+                # is actually paper-only - see dashboard/server.py's
+                # /api/overview and dashboard/static/index.html's header
+                # badge.
+                db.set_meta("live_executor_ready", "0")
+                db.set_meta("live_executor_error", str(e)[:300])
 
         backtest_candles, backtest_funding = [], []
         htf_candles: list[dict] = []

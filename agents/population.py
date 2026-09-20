@@ -234,20 +234,26 @@ class Population:
         if self.db.count_alive() > 0:
             return
         snapshot_genomes = self._load_snapshot_genomes()
-        for genome in snapshot_genomes:
-            self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
-        if snapshot_genomes:
-            log.info("Seeded %d agent(s) from snapshot library (%s)",
-                      len(snapshot_genomes), self.config.snapshot_dir)
-
         remaining = max(0, self.config.initial_population - len(snapshot_genomes))
-        log.info("Seeding %d more random-candidate agent(s) for %s (initial population %d)",
-                  remaining, self.config.token, self.config.initial_population)
-        for _ in range(remaining):
-            candidates = [Genome.random(self.config.token, self.config.timeframe, self.rng)
-                          for _ in range(self.config.backtest_candidates)]
-            genome = self._pick_best(candidates)
-            self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
+        # One commit for the whole seed batch (up to initial_population, 40
+        # by default) instead of one per create_agent() call - see
+        # db/database.py::batch(). Also means a failure partway through
+        # (e.g. a bad snapshot file) rolls back the whole batch instead of
+        # leaving a half-seeded population committed.
+        with self.db.batch():
+            for genome in snapshot_genomes:
+                self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
+            if snapshot_genomes:
+                log.info("Seeded %d agent(s) from snapshot library (%s)",
+                          len(snapshot_genomes), self.config.snapshot_dir)
+
+            log.info("Seeding %d more random-candidate agent(s) for %s (initial population %d)",
+                      remaining, self.config.token, self.config.initial_population)
+            for _ in range(remaining):
+                candidates = [Genome.random(self.config.token, self.config.timeframe, self.rng)
+                              for _ in range(self.config.backtest_candidates)]
+                genome = self._pick_best(candidates)
+                self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
 
     def refill_if_below_floor(self) -> None:
         alive = self.db.count_alive()
@@ -256,30 +262,31 @@ class Population:
         needed = self.config.min_population_floor - alive
         log.info("Population (%d) below floor (%d) - spawning %d replacements",
                   alive, self.config.min_population_floor, needed)
-        for _ in range(needed):
-            candidates = []
-            for _ in range(self.config.backtest_candidates):
-                # A real (not just probable) shot at reinstating a genuinely
-                # all-time-best genome's lineage - strategy_shares below is
-                # always mutated before reuse, so a proven peak genome
-                # otherwise only ever gets tested as a derivative of itself,
-                # never itself again. Lightly mutated (not used bit-for-bit)
-                # so repeated draws can't stamp out a second exact copy of an
-                # already-alive agent - see config.py's
-                # hall_of_fame_exact_clone_rate comment. Still screened by
-                # _pick_best against held-out data below, not committed blind.
-                hof = (self.db.sample_hall_of_fame_genome()
-                       if self.rng.random() < self.config.hall_of_fame_exact_clone_rate else None)
-                if hof:
-                    candidates.append(Genome.from_dict(hof).mutate(self.rng, mutation_rate=0.1))
-                    continue
-                shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
-                if shared:
-                    candidates.append(Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3))
-                else:
-                    candidates.append(Genome.random(self.config.token, self.config.timeframe, self.rng))
-            genome = self._pick_best(candidates)
-            self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
+        with self.db.batch():
+            for _ in range(needed):
+                candidates = []
+                for _ in range(self.config.backtest_candidates):
+                    # A real (not just probable) shot at reinstating a genuinely
+                    # all-time-best genome's lineage - strategy_shares below is
+                    # always mutated before reuse, so a proven peak genome
+                    # otherwise only ever gets tested as a derivative of itself,
+                    # never itself again. Lightly mutated (not used bit-for-bit)
+                    # so repeated draws can't stamp out a second exact copy of an
+                    # already-alive agent - see config.py's
+                    # hall_of_fame_exact_clone_rate comment. Still screened by
+                    # _pick_best against held-out data below, not committed blind.
+                    hof = (self.db.sample_hall_of_fame_genome()
+                           if self.rng.random() < self.config.hall_of_fame_exact_clone_rate else None)
+                    if hof:
+                        candidates.append(Genome.from_dict(hof).mutate(self.rng, mutation_rate=0.1))
+                        continue
+                    shared = self.db.sample_shared_genome() if self.rng.random() < 0.5 else None
+                    if shared:
+                        candidates.append(Genome.from_dict(shared).mutate(self.rng, mutation_rate=0.3))
+                    else:
+                        candidates.append(Genome.random(self.config.token, self.config.timeframe, self.rng))
+                genome = self._pick_best(candidates)
+                self.db.create_agent(genome.to_dict(), balance=self.config.starting_paper_balance)
 
     # ---- trade outcome -> lifecycle ----
 
@@ -314,13 +321,17 @@ class Population:
             return 0
         alive = self.db.list_alive_agents()
         top = sorted(alive, key=lambda a: a.fitness, reverse=True)[: self.config.revalidation_agent_limit]
-        for agent in top:
-            genome = Genome.from_dict(agent.genome)
-            result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
-                                      starting_balance=self.config.starting_paper_balance,
-                                      htf_candles=self.htf_candles)
-            score = fitness_score(result)
-            self.db.set_revalidation(agent.id, score)
+        # One commit for the whole revalidation pass (up to
+        # revalidation_agent_limit, 50 by default) instead of one per agent -
+        # see db/database.py::batch().
+        with self.db.batch():
+            for agent in top:
+                genome = Genome.from_dict(agent.genome)
+                result = backtest_genome(genome, self.backtest_candles, self.backtest_funding,
+                                          starting_balance=self.config.starting_paper_balance,
+                                          htf_candles=self.htf_candles)
+                score = fitness_score(result)
+                self.db.set_revalidation(agent.id, score)
         return len(top)
 
     def council_genomes(self, exclude_id: int) -> list[Genome]:
@@ -352,41 +363,48 @@ class Population:
                       agent.id, agent.fitness)
 
     def handle_win(self, agent_id: int, pnl: float) -> None:
-        self.db.record_win(agent_id, pnl)
-        agent = self.db.get_agent(agent_id)
-        log.info("Agent %d WON trade (pnl=%.2f, streak=%d) - spawning %d children",
-                  agent_id, pnl, agent.win_streak, self.config.children_per_win)
-        self._maybe_record_hall_of_fame(agent)
+        # One commit for this win's whole DB footprint (the win itself, the
+        # hall-of-fame check, every spawned child, the promotion check, and
+        # any strategy share) instead of one per statement - see
+        # db/database.py::batch(). Also makes the win atomic from the DB's
+        # perspective: a failure partway through no longer leaves e.g. the
+        # win recorded with only one of its two children actually created.
+        with self.db.batch():
+            self.db.record_win(agent_id, pnl)
+            agent = self.db.get_agent(agent_id)
+            log.info("Agent %d WON trade (pnl=%.2f, streak=%d) - spawning %d children",
+                      agent_id, pnl, agent.win_streak, self.config.children_per_win)
+            self._maybe_record_hall_of_fame(agent)
 
-        parent_genome = Genome.from_dict(agent.genome)
-        for _ in range(self.config.children_per_win):
-            candidates = []
-            for _ in range(self.config.backtest_candidates):
-                partner_genome = (
-                    self._pick_breeding_partner(agent.id)
-                    if self.rng.random() < self.config.crossover_probability else None
+            parent_genome = Genome.from_dict(agent.genome)
+            for _ in range(self.config.children_per_win):
+                candidates = []
+                for _ in range(self.config.backtest_candidates):
+                    partner_genome = (
+                        self._pick_breeding_partner(agent.id)
+                        if self.rng.random() < self.config.crossover_probability else None
+                    )
+                    if partner_genome is not None:
+                        candidates.append(parent_genome.crossover(partner_genome, self.rng).mutate(self.rng, mutation_rate=0.15))
+                    else:
+                        candidates.append(parent_genome.mutate(self.rng))
+                child_genome = self._pick_best(candidates)
+                self.db.create_agent(
+                    child_genome.to_dict(),
+                    balance=self.config.starting_paper_balance,
+                    parent_id=agent.id,
+                    generation=agent.generation + 1,
+                    tier=agent.tier,
                 )
-                if partner_genome is not None:
-                    candidates.append(parent_genome.crossover(partner_genome, self.rng).mutate(self.rng, mutation_rate=0.15))
-                else:
-                    candidates.append(parent_genome.mutate(self.rng))
-            child_genome = self._pick_best(candidates)
-            self.db.create_agent(
-                child_genome.to_dict(),
-                balance=self.config.starting_paper_balance,
-                parent_id=agent.id,
-                generation=agent.generation + 1,
-                tier=agent.tier,
-            )
 
-        # This win might be the second of two children needed to promote *its
-        # parent's* lineage - not this agent's own (brand-new) children.
-        self._check_promotion(agent.parent_id)
+            # This win might be the second of two children needed to promote *its
+            # parent's* lineage - not this agent's own (brand-new) children.
+            self._check_promotion(agent.parent_id)
 
-        if agent.win_streak > 0 and agent.win_streak % self.config.win_streak_share_threshold == 0:
-            log.info("Agent %d hit a %d-win streak - sharing strategy with the population",
-                      agent_id, agent.win_streak)
-            self.db.record_strategy_share(agent.id, agent.genome, agent.win_streak, agent.total_pnl)
+            if agent.win_streak > 0 and agent.win_streak % self.config.win_streak_share_threshold == 0:
+                log.info("Agent %d hit a %d-win streak - sharing strategy with the population",
+                          agent_id, agent.win_streak)
+                self.db.record_strategy_share(agent.id, agent.genome, agent.win_streak, agent.total_pnl)
 
     def handle_loss(self, agent_id: int, pnl: float) -> None:
         # Captured BEFORE the kill so this reflects the agent's peak

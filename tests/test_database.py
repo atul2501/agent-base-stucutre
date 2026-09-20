@@ -106,6 +106,27 @@ class TestFitnessScore:
         assert score == 0.0
 
 
+class TestResetAllClearsHallOfFame:
+    """Regression test for a real bug: hall_of_fame used to survive
+    reset_all() while strategy_shares (its sibling genome-reuse source) did
+    not. A genome's `coin` field is never touched by mutate()/from_dict()
+    (see strategy/genome.py), so a leftover hall_of_fame entry from a
+    previous token would leak into a freshly-reset population for a
+    DIFFERENT token via refill_if_below_floor()."""
+
+    def test_hall_of_fame_is_wiped_on_reset(self, db):
+        db.record_hall_of_fame(
+            source_agent_id=1, genome={"coin": "SOL"}, win_streak=5,
+            total_pnl=100.0, fitness=42.0, reason="new_all_time_high_fitness",
+        )
+        assert db.get_max_hall_of_fame_fitness() == 42.0
+
+        db.reset_all()
+
+        assert db.get_max_hall_of_fame_fitness() == 0.0
+        assert db.sample_hall_of_fame_genome() is None
+
+
 class TestAgentRowFitnessMatchesSharedFormula:
     def test_agent_row_fitness_uses_fitness_score(self, db):
         agent_id = db.create_agent({"coin": "SOL"}, balance=1000.0)

@@ -189,6 +189,27 @@ def _enforce_hold_window(take_profit_pct: float, max_hold_hours: float) -> float
     return max(max_hold_hours, min(min_hold, hi))
 
 
+def _normalize_invariants(child: "Genome", rng: random.Random) -> None:
+    """Re-enforces every genome-level invariant on a freshly mutated/crossed
+    child, in place - shared by mutate() and crossover() so the same 5-step
+    fixup (previously duplicated verbatim in both) can't drift between the
+    two call sites. Uses the rng-resample variants (_resample_tp_sl_ratio /
+    _resample_atr_ratio), not the deterministic from_dict() ones - from_dict()
+    has no rng available at load time and needs to stay idempotent, which is
+    why it keeps its own separate (deterministic) form of this fixup."""
+    if child.ema_slow <= child.ema_fast:
+        child.ema_slow = child.ema_fast + 5
+    if child.max_atr_pct <= child.min_atr_pct:
+        child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
+    child.stop_loss_pct, child.take_profit_pct = _resample_tp_sl_ratio(
+        rng, child.stop_loss_pct, child.take_profit_pct
+    )
+    child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
+    child.atr_stop_mult, child.atr_target_mult = _resample_atr_ratio(
+        rng, child.atr_stop_mult, child.atr_target_mult
+    )
+
+
 def genome_distance(g1: "Genome", g2: "Genome") -> float:
     """Mean absolute per-field distance between two genomes, each field
     normalized to its own BOUNDS span so a wide-range field (e.g.
@@ -354,18 +375,7 @@ class Genome:
                 new_val = round(new_val, 5)
             setattr(child, field_name, new_val)
 
-        if child.ema_slow <= child.ema_fast:
-            child.ema_slow = child.ema_fast + 5
-        if child.max_atr_pct <= child.min_atr_pct:
-            child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
-        child.stop_loss_pct, child.take_profit_pct = _resample_tp_sl_ratio(
-            rng, child.stop_loss_pct, child.take_profit_pct
-        )
-        child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
-        child.atr_stop_mult, child.atr_target_mult = _resample_atr_ratio(
-            rng, child.atr_stop_mult, child.atr_target_mult
-        )
-
+        _normalize_invariants(child, rng)
         return child
 
     def crossover(self, other: "Genome", rng: random.Random) -> "Genome":
@@ -379,16 +389,5 @@ class Genome:
             if rng.random() < 0.5:
                 setattr(child, field_name, getattr(other, field_name))
 
-        if child.ema_slow <= child.ema_fast:
-            child.ema_slow = child.ema_fast + 5
-        if child.max_atr_pct <= child.min_atr_pct:
-            child.max_atr_pct = round(child.min_atr_pct + 0.1, 4)
-        child.stop_loss_pct, child.take_profit_pct = _resample_tp_sl_ratio(
-            rng, child.stop_loss_pct, child.take_profit_pct
-        )
-        child.max_hold_hours = _enforce_hold_window(child.take_profit_pct, child.max_hold_hours)
-        child.atr_stop_mult, child.atr_target_mult = _resample_atr_ratio(
-            rng, child.atr_stop_mult, child.atr_target_mult
-        )
-
+        _normalize_invariants(child, rng)
         return child

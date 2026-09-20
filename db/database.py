@@ -1,6 +1,7 @@
 """SQLite persistence layer for agents, trades, and shared strategies."""
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import sqlite3
@@ -51,11 +52,6 @@ class AgentRow:
         return json.loads(self.genome_json)
 
     @property
-    def win_rate(self) -> float:
-        total = self.wins + self.losses
-        return self.wins / total if total else 0.0
-
-    @property
     def fitness(self) -> float:
         # Ranking score used for population-cap culling and top-N trader
         # selection. Normalized as % return on starting balance (not raw
@@ -84,7 +80,49 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")  # lets the dashboard read concurrently
+        self._batch_depth = 0
         self._init_schema()
+
+    def _commit(self) -> None:
+        """Every write method below calls this instead of self.conn.commit()
+        directly, so batch() (below) can defer commits with zero call-site
+        changes - a no-op here while a batch() block is active; that block's
+        own __exit__ does the single commit (or rollback) instead."""
+        if self._batch_depth == 0:
+            self.conn.commit()
+
+    @contextlib.contextmanager
+    def batch(self):
+        """Defers every write inside this block to ONE commit at the end,
+        instead of one commit per statement. Reentrant (nested batch()
+        blocks are a no-op until the outermost exits), so a caller doesn't
+        need to know whether it's already inside one.
+
+        Written for the tight creation/update loops in agents/population.py
+        (seed_if_empty, refill_if_below_floor, handle_win's children,
+        revalidate_top_agents) that previously committed after every single
+        create_agent()/set_revalidation() call - up to population_cap (500)
+        individual commits in a row in the worst case. This is a real
+        correctness improvement, not just a speed one: on an exception
+        partway through such a loop, everything already committed before
+        that point used to stay permanently committed with no way to undo
+        it; now the whole block rolls back together.
+
+        Every other Database method's default (commit-per-statement, no
+        batch() wrapper) is unchanged - see db/database.py's own review
+        notes on why that default is kept as the safe baseline everywhere
+        else."""
+        self._batch_depth += 1
+        try:
+            yield
+            if self._batch_depth == 1:
+                self.conn.commit()
+        except Exception:
+            if self._batch_depth == 1:
+                self.conn.rollback()
+            raise
+        finally:
+            self._batch_depth -= 1
 
     def _init_schema(self) -> None:
         with open(SCHEMA_PATH) as f:
@@ -189,7 +227,7 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?)""",
             (parent_id, generation, json.dumps(genome), balance, tier, now_iso()),
         )
-        self.conn.commit()
+        self._commit()
         return cur.lastrowid
 
     def get_agent(self, agent_id: int) -> Optional[AgentRow]:
@@ -233,7 +271,7 @@ class Database:
                 f"UPDATE agents SET is_active_trader = 1 WHERE id IN ({qmarks})",
                 tuple(agent_ids),
             )
-        self.conn.commit()
+        self._commit()
 
     def list_live_traders(self) -> list[AgentRow]:
         rows = self.conn.execute(
@@ -249,11 +287,11 @@ class Database:
                 f"UPDATE agents SET is_live_trader = 1 WHERE id IN ({qmarks})",
                 tuple(agent_ids),
             )
-        self.conn.commit()
+        self._commit()
 
     def set_tier(self, agent_id: int, tier: str) -> None:
         self.conn.execute("UPDATE agents SET tier = ? WHERE id = ?", (tier, agent_id))
-        self.conn.commit()
+        self._commit()
 
     def set_revalidation(self, agent_id: int, score: float) -> None:
         """Records the result of re-backtesting an already-proven agent's
@@ -264,7 +302,7 @@ class Database:
             "UPDATE agents SET revalidation_score = ?, revalidated_at = ? WHERE id = ?",
             (score, now_iso(), agent_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def record_win(self, agent_id: int, pnl: float) -> None:
         self.conn.execute(
@@ -275,7 +313,7 @@ class Database:
                WHERE id = ?""",
             (pnl, pnl, agent_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def record_loss_and_kill(self, agent_id: int, pnl: float) -> None:
         self.conn.execute(
@@ -287,14 +325,14 @@ class Database:
                WHERE id = ?""",
             (pnl, pnl, now_iso(), agent_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def kill_agent(self, agent_id: int, reason: str) -> None:
         self.conn.execute(
             "UPDATE agents SET status = 'dead', died_at = ?, death_reason = ? WHERE id = ?",
             (now_iso(), reason, agent_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def _row_to_agent(self, row: sqlite3.Row) -> AgentRow:
         return AgentRow(
@@ -343,7 +381,7 @@ class Database:
             (agent_id, coin, side, entry_price, size, notional, stop_loss, take_profit,
              entry_reason, regime, entry_funding, size, partial_target, now_iso()),
         )
-        self.conn.commit()
+        self._commit()
         return cur.lastrowid
 
     def get_open_trade(self, agent_id: int) -> Optional[sqlite3.Row]:
@@ -362,12 +400,12 @@ class Database:
                WHERE id = ?""",
             (exit_price, pnl, result, exit_reason, now_iso(), trade_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def update_trade_stop(self, trade_id: int, new_stop_loss: float) -> None:
         """Trailing-stop tightening - see strategy/signals.py::evaluate_position."""
         self.conn.execute("UPDATE trades SET stop_loss = ? WHERE id = ?", (new_stop_loss, trade_id))
-        self.conn.commit()
+        self._commit()
 
     def record_partial_close(self, trade_id: int, remaining_size: float, partial_frac_taken: float,
                               partial_pnl_pct: float, partial_realized_pnl: float, new_stop_loss: float) -> None:
@@ -386,7 +424,7 @@ class Database:
                WHERE id = ?""",
             (remaining_size, partial_frac_taken, partial_pnl_pct, partial_realized_pnl, new_stop_loss, trade_id),
         )
-        self.conn.commit()
+        self._commit()
 
     def apply_partial_pnl(self, agent_id: int, pnl: float) -> None:
         """Immediately credits a partial take-profit's realized $ pnl to
@@ -399,7 +437,7 @@ class Database:
             "UPDATE agents SET balance = balance + ?, total_pnl = total_pnl + ? WHERE id = ?",
             (pnl, pnl, agent_id),
         )
-        self.conn.commit()
+        self._commit()
 
     # ---- strategy shares ----
 
@@ -410,7 +448,7 @@ class Database:
                VALUES (?, ?, ?, ?, ?)""",
             (source_agent_id, json.dumps(genome), win_streak, total_pnl, now_iso()),
         )
-        self.conn.commit()
+        self._commit()
 
     def sample_shared_genome(self) -> Optional[dict]:
         row = self.conn.execute(
@@ -432,7 +470,7 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (source_agent_id, json.dumps(genome), win_streak, total_pnl, fitness, now_iso(), reason),
         )
-        self.conn.commit()
+        self._commit()
 
     def sample_hall_of_fame_genome(self) -> Optional[dict]:
         row = self.conn.execute(
@@ -465,7 +503,7 @@ class Database:
             (cycle, alive_count, active_trader_count, professional_count,
              best_agent_id, best_total_pnl, total_realized_pnl, now_iso()),
         )
-        self.conn.commit()
+        self._commit()
 
     def recent_population_cycles(self, limit: int = 200) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -484,15 +522,24 @@ class Database:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
-        self.conn.commit()
+        self._commit()
 
     def reset_all(self) -> None:
-        """Wipe every agent/trade/strategy/live record - 'step 0', forget everything."""
-        for table in ("trades", "strategy_shares", "population_cycles", "live_orders",
-                      "live_position", "agents", "meta"):
+        """Wipe every agent/trade/strategy/live record - 'step 0', forget everything.
+
+        hall_of_fame is included alongside strategy_shares - both are
+        genome-reuse sources for refill_if_below_floor(), and a genome's
+        `coin` field is never touched by mutate()/from_dict() (see
+        strategy/genome.py), so leaving a previous token's hall_of_fame
+        genomes in place across a --reset + TOKEN switch would let them
+        leak into the "fresh" population, plus permanently skew
+        get_max_hall_of_fame_fitness()'s new-all-time-high comparison
+        against the OLD token's fitness numbers."""
+        for table in ("trades", "strategy_shares", "hall_of_fame", "population_cycles",
+                      "live_orders", "live_position", "agents", "meta"):
             self.conn.execute(f"DELETE FROM {table}")
         self.conn.execute("DELETE FROM sqlite_sequence")
-        self.conn.commit()
+        self._commit()
 
     # ---- live position (single aggregate real position per coin) ----
 
@@ -508,7 +555,7 @@ class Database:
                  notional = excluded.notional, updated_at = excluded.updated_at""",
             (coin, side, size, notional, now_iso()),
         )
-        self.conn.commit()
+        self._commit()
 
     def record_live_order(self, coin: str, action: str, side: str, notional: float,
                            fill_price: Optional[float], status: str, detail: str = "") -> None:
@@ -517,7 +564,7 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (coin, action, side, notional, fill_price, status, detail, now_iso()),
         )
-        self.conn.commit()
+        self._commit()
 
     def recent_live_orders(self, limit: int = 50) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -544,15 +591,6 @@ class Database:
             "losses": row["losses"] or 0,
             "win_rate": (wins / closed) if closed else 0.0,
         }
-
-    def leaderboard(self, limit: int = 25) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            """SELECT * FROM agents WHERE status = 'alive'
-               ORDER BY (total_pnl + CASE WHEN (wins + losses) > 0
-                         THEN CAST(wins AS REAL) / (wins + losses) ELSE 0 END) DESC
-               LIMIT ?""",
-            (limit,),
-        ).fetchall()
 
     def recent_trades(self, limit: int = 50) -> list[sqlite3.Row]:
         return self.conn.execute(
