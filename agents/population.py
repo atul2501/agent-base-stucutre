@@ -2,7 +2,11 @@
 
 - Win: agent survives, balance grows by the pnl, and it spawns
   `children_per_win` mutated copies of itself into the population.
-- Loss: agent dies immediately (do-or-die).
+- Loss: agent dies once its lifetime loss count reaches
+  `config.max_losses_before_death` (default 1 - dies on the very first loss,
+  reproducing the original do-or-die behavior), OR immediately regardless of
+  lives remaining if the loss alone wipes out `config.catastrophic_loss_pct`
+  of its balance (0 by default - disabled). See handle_loss below.
 - Promotion: once BOTH children of a parent have won at least one trade of
   their own, that parent + those two children are promoted to the
   "professional" tier (a proven, self-sustaining lineage).
@@ -407,14 +411,28 @@ class Population:
                 self.db.record_strategy_share(agent.id, agent.genome, agent.win_streak, agent.total_pnl)
 
     def handle_loss(self, agent_id: int, pnl: float) -> None:
-        # Captured BEFORE the kill so this reflects the agent's peak
+        # Captured BEFORE any kill so this reflects the agent's peak
         # performance from its winning streak, not the losing trade that's
         # about to drag its fitness down - that peak is exactly what's
         # worth preserving.
         agent = self.db.get_agent(agent_id)
         self._maybe_record_hall_of_fame(agent)
-        self.db.record_loss_and_kill(agent_id, pnl)
-        log.info("Agent %d LOST trade (pnl=%.2f) - do or die: eliminated", agent_id, pnl)
+
+        loss_pct = (abs(pnl) / agent.balance * 100) if agent.balance else 0.0
+        catastrophic = (self.config.catastrophic_loss_pct > 0
+                         and loss_pct >= self.config.catastrophic_loss_pct)
+        total_losses = agent.losses + 1
+
+        if catastrophic or total_losses >= self.config.max_losses_before_death:
+            reason = "catastrophic loss" if catastrophic else "losing trade"
+            self.db.record_loss_and_kill(agent_id, pnl, reason=reason)
+            log.info("Agent %d LOST trade (pnl=%.2f) - %s: eliminated (%d/%d losses)",
+                      agent_id, pnl, reason, total_losses, self.config.max_losses_before_death)
+        else:
+            self.db.record_loss(agent_id, pnl)
+            log.info("Agent %d LOST trade (pnl=%.2f) - survives with %d life/lives left (%d/%d losses)",
+                      agent_id, pnl, self.config.max_losses_before_death - total_losses,
+                      total_losses, self.config.max_losses_before_death)
 
     def _check_promotion(self, parent_id: int) -> None:
         if parent_id is None:

@@ -153,6 +153,18 @@ class Config:
     # that have completed >=1 trade). Past this many idle hours, it becomes
     # culuable too, but only when the population actually needs the room.
     max_idle_hours_before_cull: int = int(os.getenv("MAX_IDLE_HOURS_BEFORE_CULL", "6"))
+    # An agent survives a loss instead of dying immediately as long as its total
+    # loss count stays under this. Default of 1 reproduces the original
+    # instant-death-on-any-loss behavior - raise it to give agents "lives".
+    # Losses accumulate for the agent's whole lifetime (a win does NOT restore a
+    # life) - simplest interpretation of "N losses tolerated", not a per-streak
+    # allowance. See agents/population.py::handle_loss.
+    max_losses_before_death: int = int(os.getenv("MAX_LOSSES_BEFORE_DEATH", "1"))
+    # A single loss that wipes out at least this % of the agent's balance kills
+    # it immediately regardless of lives remaining - a lives system alone would
+    # let a near-fatal single trade slide as "just one more life used up".
+    # 0 (default) disables this override entirely, so it's opt-in.
+    catastrophic_loss_pct: float = float(os.getenv("CATASTROPHIC_LOSS_PCT", "0"))
     children_per_win: int = int(os.getenv("CHILDREN_PER_WIN", "2"))
     # Chance a child comes from crossing two independently-successful
     # agents instead of pure self-mutation - lets a win also draw on a

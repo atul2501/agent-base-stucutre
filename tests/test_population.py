@@ -112,6 +112,39 @@ class TestWinLossLifecycle:
         assert agent.death_reason == "losing trade"
         assert agent.total_pnl == pytest.approx(-10.0)
 
+    def test_agent_survives_losses_under_the_lives_limit(self, db, rng):
+        cfg = Config(backtest_enabled=False, max_losses_before_death=3)
+        pop = Population(db, cfg, rng=rng)
+        agent_id = _make_agent(db, rng)
+
+        pop.handle_loss(agent_id, pnl=-10.0)
+        agent = db.get_agent(agent_id)
+        assert agent.status == "alive"
+        assert agent.losses == 1
+
+        pop.handle_loss(agent_id, pnl=-10.0)
+        agent = db.get_agent(agent_id)
+        assert agent.status == "alive"
+        assert agent.losses == 2
+
+        pop.handle_loss(agent_id, pnl=-10.0)
+        agent = db.get_agent(agent_id)
+        assert agent.status == "dead"
+        assert agent.death_reason == "losing trade"
+        assert agent.losses == 3
+
+    def test_catastrophic_loss_kills_immediately_regardless_of_lives(self, db, rng):
+        cfg = Config(backtest_enabled=False, max_losses_before_death=5, catastrophic_loss_pct=50.0)
+        pop = Population(db, cfg, rng=rng)
+        agent_id = _make_agent(db, rng, balance=1000.0)
+
+        pop.handle_loss(agent_id, pnl=-600.0)  # 60% of balance
+
+        agent = db.get_agent(agent_id)
+        assert agent.status == "dead"
+        assert agent.death_reason == "catastrophic loss"
+        assert agent.losses == 1
+
     def test_strategy_share_only_recorded_on_win_streak_threshold(self, db, rng):
         """Regression test: a batching refactor of handle_win once
         accidentally de-indented record_strategy_share out of its

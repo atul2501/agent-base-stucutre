@@ -315,15 +315,29 @@ class Database:
         )
         self._commit()
 
-    def record_loss_and_kill(self, agent_id: int, pnl: float) -> None:
+    def record_loss(self, agent_id: int, pnl: float) -> None:
+        """Records a loss WITHOUT killing the agent - used when
+        max_losses_before_death allows the agent to survive with a life
+        remaining. See agents/population.py::handle_loss."""
+        self.conn.execute(
+            """UPDATE agents
+               SET losses = losses + 1, win_streak = 0,
+                   total_pnl = total_pnl + ?, balance = balance + ?,
+                   trades_count = trades_count + 1
+               WHERE id = ?""",
+            (pnl, pnl, agent_id),
+        )
+        self._commit()
+
+    def record_loss_and_kill(self, agent_id: int, pnl: float, reason: str = "losing trade") -> None:
         self.conn.execute(
             """UPDATE agents
                SET losses = losses + 1, win_streak = 0,
                    total_pnl = total_pnl + ?, balance = balance + ?,
                    trades_count = trades_count + 1,
-                   status = 'dead', died_at = ?, death_reason = 'losing trade'
+                   status = 'dead', died_at = ?, death_reason = ?
                WHERE id = ?""",
-            (pnl, pnl, now_iso(), agent_id),
+            (pnl, pnl, now_iso(), reason, agent_id),
         )
         self._commit()
 
